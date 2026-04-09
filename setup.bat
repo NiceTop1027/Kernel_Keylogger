@@ -30,8 +30,8 @@ call :ok
 :: STEP 1: 테스트 서명 모드
 :: ────────────────────────────────────────────────────────────────
 call :step 1 8 "테스트 서명 모드 확인"
-for /f "tokens=2*" %%a in ('bcdedit 2^>nul ^| findstr /i "testsigning"') do set TESTSIGN=%%b
-if /i "!TESTSIGN!"=="Yes" (
+bcdedit 2>nul | findstr /i "testsigning" | findstr /i "yes" >nul 2>&1
+if not errorlevel 1 (
     call :ok "이미 활성화됨"
 ) else (
     bcdedit /set testsigning on >nul 2>&1

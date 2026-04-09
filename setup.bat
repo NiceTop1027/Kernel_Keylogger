@@ -111,22 +111,25 @@ if not defined MSBUILD (
 )
 call :ok "MSBuild 발견"
 
-:: WDK 확인 및 자동 설치
+:: WDK 확인 및 자동 설치 (VS 통합 포함)
 set WDK_FOUND=0
 for /d %%v in ("%ProgramFiles(x86)%\Windows Kits\10\bin\10.*") do (
     if exist "%%v\x64\makecert.exe" set WDK_FOUND=1
 )
 if "!WDK_FOUND!"=="0" (
-    echo         WDK 없음 -- winget 으로 자동 설치 중...
-    winget install -e --id Microsoft.WindowsDriverKit.10 --silent --accept-package-agreements --accept-source-agreements >nul 2>&1
-    if errorlevel 1 (
-        call :warn "WDK winget 설치 실패 -- 서명 없이 계속 (테스트 서명 모드에서 가능)"
-    ) else (
-        call :ok "WDK 설치 완료"
-    )
+    echo         WDK 없음 -- 다운로드 및 설치 중... (수분 소요)
+    powershell -NoProfile -Command "Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile '$env:TEMP\wdksetup.exe' -UseBasicParsing" >nul 2>&1
+    "%TEMP%\wdksetup.exe" /quiet /norestart /ceip off
+    call :ok "WDK 설치 완료"
 ) else (
     call :ok "WDK 발견"
 )
+:: WDK VS2022 통합 VSIX 설치 (WindowsKernelModeDriver10.0 플랫폼 도구 집합)
+call :install_wdk_vsix
+
+:: ────────────────────────────────────────────────────────────────
+:: MSBuild 경로 재탐색 (VSIX 설치 후)
+call :find_msbuild
 
 :: ────────────────────────────────────────────────────────────────
 :: STEP 5: 드라이버 빌드
@@ -252,6 +255,33 @@ goto :eof
 :: ────────────────────────────────────────────────────────────────
 :: 도우미 함수
 :: ────────────────────────────────────────────────────────────────
+:install_wdk_vsix
+:: WDK VS2022 통합 VSIX 적용 (WindowsKernelModeDriver10.0 플랫폼 도구 집합 등록)
+set VSIXINSTALLER=
+for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
+    for %%e in (Community Professional Enterprise BuildTools) do (
+        if exist "%%~p\Microsoft Visual Studio\2022\%%e\Common7\IDE\VSIXInstaller.exe" (
+            set "VSIXINSTALLER=%%~p\Microsoft Visual Studio\2022\%%e\Common7\IDE\VSIXInstaller.exe"
+        )
+    )
+)
+if not defined VSIXINSTALLER (
+    call :warn "VSIXInstaller 없음 -- WDK VS 통합 건너뜀"
+    goto :eof
+)
+set WDK_VSIX=
+for /d %%v in ("%ProgramFiles(x86)%\Windows Kits\10\vsix\*") do (
+    if exist "%%v\WDK.vsix" set "WDK_VSIX=%%v\WDK.vsix"
+)
+if not defined WDK_VSIX (
+    call :warn "WDK.vsix 없음 -- WDK VS 통합 건너뜀"
+    goto :eof
+)
+echo         WDK VS2022 통합 VSIX 설치 중...
+"%VSIXINSTALLER%" /q "%WDK_VSIX%" >nul 2>&1
+call :ok "WDK VS 통합 완료 (WindowsKernelModeDriver10.0)"
+goto :eof
+
 :find_msbuild
 set MSBUILD=
 :: 1) vswhere.exe (VS 설치 시 자동 포함되는 공식 탐색 도구)

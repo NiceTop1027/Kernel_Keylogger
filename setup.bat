@@ -111,25 +111,29 @@ if not defined MSBUILD (
 )
 call :ok "MSBuild 발견"
 
-:: WDK 확인 및 자동 설치 (VS 통합 포함)
-set WDK_FOUND=0
-for /d %%v in ("%ProgramFiles(x86)%\Windows Kits\10\bin\10.*") do (
-    if exist "%%v\x64\makecert.exe" set WDK_FOUND=1
+:: WDK VS 통합 확인 (WindowsKernelModeDriver10.0 툴셋 등록 여부)
+set WDK_VS_OK=0
+for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
+    for %%e in (Community Professional Enterprise BuildTools) do (
+        if exist "%%~p\Microsoft Visual Studio\2022\%%e\MSBuild\Microsoft\WindowsDriver\" (
+            set WDK_VS_OK=1
+        )
+    )
 )
-if "!WDK_FOUND!"=="0" (
-    echo         WDK 없음 -- 다운로드 및 설치 중... (수분 소요)
-    powershell -NoProfile -Command "Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile '$env:TEMP\wdksetup.exe' -UseBasicParsing" >nul 2>&1
-    "%TEMP%\wdksetup.exe" /quiet /norestart /ceip off
-    call :ok "WDK 설치 완료"
+if "!WDK_VS_OK!"=="1" (
+    call :ok "WDK VS 통합 발견"
 ) else (
-    call :ok "WDK 발견"
+    echo         WDK VS 통합 없음 -- 공식 설치 파일 다운로드 중... (수분 소요)
+    set "WDK_SETUP=%TEMP%\wdksetup.exe"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile '%TEMP%\wdksetup.exe' -UseBasicParsing"
+    if exist "%TEMP%\wdksetup.exe" (
+        "%TEMP%\wdksetup.exe" /quiet /norestart
+        call :ok "WDK + VS 통합 설치 완료"
+    ) else (
+        call :warn "WDK 다운로드 실패 -- 수동 설치 후 재실행"
+        echo         수동 설치: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
+    )
 )
-:: WDK VS2022 통합 VSIX 설치 (WindowsKernelModeDriver10.0 플랫폼 도구 집합)
-call :install_wdk_vsix
-
-:: ────────────────────────────────────────────────────────────────
-:: MSBuild 경로 재탐색 (VSIX 설치 후)
-call :find_msbuild
 
 :: ────────────────────────────────────────────────────────────────
 :: STEP 5: 드라이버 빌드

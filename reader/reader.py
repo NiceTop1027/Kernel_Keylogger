@@ -41,6 +41,13 @@ ctypes.windll.kernel32.SetConsoleCP(65001)
 _k32  = ctypes.windll.kernel32
 _u32  = ctypes.windll.user32
 
+# 64비트 핸들/포인터 반환형 명시 (미설정 시 32비트로 잘림)
+_u32.GetForegroundWindow.restype          = ctypes.wintypes.HWND
+_u32.GetWindowThreadProcessId.restype     = ctypes.wintypes.DWORD
+_u32.GetKeyboardLayout.restype            = ctypes.c_void_p   # HKL
+_u32.MapVirtualKeyExW.restype             = ctypes.wintypes.UINT
+_u32.ToUnicodeEx.restype                  = ctypes.c_int
+
 GENERIC_READ         = 0x80000000
 OPEN_EXISTING        = 3
 INVALID_HANDLE       = ctypes.wintypes.HANDLE(-1).value
@@ -144,7 +151,8 @@ def _get_layout() -> int:
     try:
         hwnd = _u32.GetForegroundWindow()
         tid  = _u32.GetWindowThreadProcessId(hwnd, None)
-        return _u32.GetKeyboardLayout(tid)
+        hkl  = _u32.GetKeyboardLayout(tid)
+        return hkl or 0   # c_void_p는 None일 수 있음
     except Exception:
         return 0
 

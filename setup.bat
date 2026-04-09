@@ -3,31 +3,17 @@ setlocal EnableDelayedExpansion
 chcp 65001 >nul 2>&1
 title KeyLogger Setup
 
-:: ================================================================
-::  setup.bat — 원클릭 완전 자동 설치
-::
-::  자동 처리 항목:
-::    [0] 관리자 권한 확인
-::    [1] 테스트 서명 모드 확인
-::    [2] Python 자동 설치 (winget)
-::    [3] pip 패키지 설치 (requirements.txt)
-::    [4] WDK / VS2022 확인
-::    [5] 드라이버 빌드 (KeyFilter.sys)
-::    [6] 드라이버 서명 (테스트 인증서 자동 생성)
-::    [7] 드라이버 설치 및 시작
-::    [8] PATH 등록 (kernel_keylogger 명령)
-::
-::  필수 조건: Windows 10/11 VM + 관리자 권한
-:: ================================================================
-
 set ROOT=%~dp0
 set DRIVER_SRC=%ROOT%driver
 set DRIVER_SYS=%ROOT%driver\KeyFilter.sys
 set SERVICE=KeyFilter
 set CERT_NAME=KeyFilterTestCert
-set ERRORS=0
 
-call :header
+echo.
+echo  =========================================
+echo    KeyLogger  원클릭 자동 설치 스크립트
+echo  =========================================
+echo.
 
 :: ────────────────────────────────────────────────────────────────
 :: STEP 0: 관리자 권한
@@ -35,7 +21,7 @@ call :header
 call :step 0 8 "관리자 권한 확인"
 net session >nul 2>&1
 if errorlevel 1 (
-    call :fail "관리자 권한 없음 — 우클릭 후 '관리자로 실행'"
+    call :fail "관리자 권한 없음 -- 우클릭 후 '관리자로 실행'"
     pause & exit /b 1
 )
 call :ok
@@ -50,13 +36,17 @@ if /i "!TESTSIGN!"=="Yes" (
 ) else (
     bcdedit /set testsigning on >nul 2>&1
     if errorlevel 1 (
-        call :warn "활성화 실패 — Secure Boot 꺼져 있어야 함. VM 설정 확인"
-    ) else (
-        call :ok "활성화 완료 — 재부팅 후 setup.bat 다시 실행하세요"
-        echo.
-        echo   재부팅이 필요합니다. 재부팅 후 setup.bat 를 다시 실행하세요.
-        pause & exit /b 0
+        call :fail "활성화 실패 -- VM 설정에서 Secure Boot 를 꺼주세요"
+        pause & exit /b 1
     )
+    call :ok "활성화 완료"
+    echo.
+    echo  [!] 테스트 서명 모드 적용을 위해 재부팅이 필요합니다.
+    echo      재부팅 후 setup.bat 를 다시 실행하세요.
+    echo.
+    pause
+    shutdown /r /t 5 /c "testsigning 적용을 위한 재부팅"
+    exit /b 0
 )
 
 :: ────────────────────────────────────────────────────────────────
@@ -69,52 +59,31 @@ if not errorlevel 1 (
     goto :pip_install
 )
 
-:: winget 으로 자동 설치 시도
-echo         Python 없음 — winget 으로 자동 설치 시도...
-winget --version >nul 2>&1
-if errorlevel 1 (
-    call :fail "winget 도 없음"
-    echo.
-    echo    수동 설치: https://python.org/downloads
-    echo    설치 후 이 스크립트를 다시 실행하세요.
-    pause & exit /b 1
-)
-
+echo         Python 없음 -- winget 으로 자동 설치...
 winget install -e --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
 if errorlevel 1 (
-    call :fail "Python 자동 설치 실패 — https://python.org 에서 수동 설치"
+    call :fail "Python 설치 실패 -- https://python.org 에서 수동 설치 후 재실행"
     pause & exit /b 1
 )
-
-:: PATH 갱신 후 재확인
-for /f "skip=2 tokens=3*" %%a in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set "UPATH=%%a %%b"
+:: PATH 갱신
+set "PATH=%LOCALAPPDATA%\Programs\Python\Python312;%LOCALAPPDATA%\Programs\Python\Python312\Scripts;%PATH%"
 python --version >nul 2>&1
 if errorlevel 1 (
-    call :warn "설치됐지만 PATH 반영 안 됨 — CMD 재시작 후 재실행 권장"
+    call :warn "PATH 미반영 -- CMD 재시작 후 재실행 권장"
 ) else (
     call :ok "Python 설치 완료"
 )
 
 :pip_install
 :: ────────────────────────────────────────────────────────────────
-:: STEP 2: pip 패키지 설치
+:: STEP 3: pip 패키지 설치
 :: ────────────────────────────────────────────────────────────────
-call :step 3 8 "pip 패키지 설치 (requirements.txt)"
-
+call :step 3 8 "pip 패키지 설치"
 python -m pip install --upgrade pip --quiet 2>nul
-
 if exist "%ROOT%requirements.txt" (
     python -m pip install -r "%ROOT%requirements.txt" --quiet 2>nul
-    if errorlevel 1 (
-        call :warn "일부 패키지 설치 실패 (표준 라이브러리만 사용하므로 무시 가능)"
-    ) else (
-        call :ok "패키지 설치 완료 (현재 외부 패키지 없음)"
-    )
-) else (
-    call :ok "requirements.txt 없음 — 건너뜀"
 )
-
-python -c "import ctypes, sqlite3, struct, argparse; print('stdlib OK')" >nul 2>&1
+python -c "import ctypes, sqlite3, struct, argparse" >nul 2>&1
 if errorlevel 1 (
     call :fail "Python 표준 라이브러리 임포트 실패"
     pause & exit /b 1
@@ -122,40 +91,55 @@ if errorlevel 1 (
 call :ok "Python 모듈 검증 완료"
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 3: Visual Studio 2022 + WDK 확인
+:: STEP 4: Visual Studio 2022 BuildTools 확인 및 자동 설치
 :: ────────────────────────────────────────────────────────────────
-call :step 4 8 "Visual Studio 2022 + WDK 확인"
+call :step 4 8 "Visual Studio 2022 + WDK 확인 및 설치"
 
 set MSBUILD=
 for %%e in (Community Professional Enterprise BuildTools) do (
-    set TRY="%ProgramFiles%\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\MSBuild.exe"
-    if exist !TRY! set MSBUILD=!TRY!
+    if exist "%ProgramFiles%\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\MSBuild.exe" (
+        set "MSBUILD=%ProgramFiles%\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\MSBuild.exe"
+    )
 )
+
 if not defined MSBUILD (
-    call :fail "Visual Studio 2022 없음"
-    echo.
-    echo    설치 방법:
-    echo      1. winget install Microsoft.VisualStudio.2022.BuildTools
-    echo      2. VS Installer 에서 "C++를 사용한 데스크톱 개발" 선택
-    echo      3. WDK: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
-    echo.
-    set /p SKIP="VS/WDK 없이 계속 (드라이버 빌드 건너뜀)? [Y/N]: "
-    if /i "!SKIP!"=="Y" goto :skip_build
-    pause & exit /b 1
+    echo         VS2022 없음 -- winget 으로 자동 설치 중... (수분 소요)
+    winget install -e --id Microsoft.VisualStudio.2022.BuildTools --silent --accept-package-agreements --accept-source-agreements --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+    if errorlevel 1 (
+        call :fail "VS2022 설치 실패 -- https://aka.ms/vs/17/release/vs_buildtools.exe 수동 설치"
+        pause & exit /b 1
+    )
+    for %%e in (Community Professional Enterprise BuildTools) do (
+        if exist "%ProgramFiles%\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\MSBuild.exe" (
+            set "MSBUILD=%ProgramFiles%\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\MSBuild.exe"
+        )
+    )
+    if not defined MSBUILD (
+        call :fail "VS2022 설치됐지만 MSBuild 경로를 찾지 못함 -- CMD 재시작 후 재실행"
+        pause & exit /b 1
+    )
 )
 call :ok "MSBuild 발견"
 
+:: WDK 확인 및 자동 설치
 set WDK_FOUND=0
 for /d %%v in ("%ProgramFiles(x86)%\Windows Kits\10\bin\10.*") do (
     if exist "%%v\x64\makecert.exe" set WDK_FOUND=1
 )
 if "!WDK_FOUND!"=="0" (
-    call :warn "WDK 없음 — 서명 없이 빌드 진행"
-    echo         WDK 설치: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
+    echo         WDK 없음 -- winget 으로 자동 설치 중...
+    winget install -e --id Microsoft.WindowsDriverKit.10 --silent --accept-package-agreements --accept-source-agreements >nul 2>&1
+    if errorlevel 1 (
+        call :warn "WDK winget 설치 실패 -- 서명 없이 계속 (테스트 서명 모드에서 가능)"
+    ) else (
+        call :ok "WDK 설치 완료"
+    )
+) else (
+    call :ok "WDK 발견"
 )
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 4: 드라이버 빌드
+:: STEP 5: 드라이버 빌드
 :: ────────────────────────────────────────────────────────────────
 call :step 5 8 "드라이버 빌드"
 if not exist "%DRIVER_SRC%\KeyFilter.vcxproj" (
@@ -163,29 +147,17 @@ if not exist "%DRIVER_SRC%\KeyFilter.vcxproj" (
     pause & exit /b 1
 )
 
-%MSBUILD% "%DRIVER_SRC%\KeyFilter.vcxproj" ^
-    /p:Configuration=Release /p:Platform=x64 ^
-    /nologo /verbosity:minimal ^
-    /p:OutDir="%DRIVER_SRC%\bin\\" 2>&1 | findstr /i "error warning"
+"%MSBUILD%" "%DRIVER_SRC%\KeyFilter.vcxproj" /p:Configuration=Release /p:Platform=x64 /nologo /verbosity:minimal /p:OutDir="%DRIVER_SRC%\bin\\" 2>&1 | findstr /i "error warning"
 
 if not exist "%DRIVER_SRC%\bin\KeyFilter.sys" (
-    call :fail "빌드 결과물 없음 — VS 에서 직접 빌드해서 오류 확인"
+    call :fail "빌드 실패 -- 위 오류 메시지를 확인하세요"
     pause & exit /b 1
 )
 copy /y "%DRIVER_SRC%\bin\KeyFilter.sys" "%DRIVER_SYS%" >nul
 call :ok "KeyFilter.sys 생성 완료"
-goto :sign
 
-:skip_build
-if not exist "%DRIVER_SYS%" (
-    call :fail "KeyFilter.sys 없음 — 빌드 없이 설치 불가"
-    pause & exit /b 1
-)
-call :warn "기존 KeyFilter.sys 사용"
-
-:sign
 :: ────────────────────────────────────────────────────────────────
-:: STEP 5: 드라이버 서명
+:: STEP 6: 드라이버 서명
 :: ────────────────────────────────────────────────────────────────
 call :step 6 8 "드라이버 서명 (테스트 인증서)"
 
@@ -193,56 +165,43 @@ set MAKECERT=
 set SIGNTOOL=
 for /d %%v in ("%ProgramFiles(x86)%\Windows Kits\10\bin\10.*") do (
     if exist "%%v\x64\makecert.exe" (
-        set MAKECERT="%%v\x64\makecert.exe"
-        set SIGNTOOL="%%v\x64\signtool.exe"
+        set "MAKECERT=%%v\x64\makecert.exe"
+        set "SIGNTOOL=%%v\x64\signtool.exe"
     )
 )
 
 if not defined MAKECERT (
-    call :warn "WDK 서명 도구 없음 — 서명 건너뜀"
+    call :warn "서명 도구 없음 -- 서명 건너뜀"
     goto :install_driver
 )
 
 certutil -store PrivateCertStore "%CERT_NAME%" >nul 2>&1
 if errorlevel 1 (
-    %MAKECERT% -r -pe -ss root -sr localMachine ^
-        -n "CN=%CERT_NAME% Root" ^
-        -eku 1.3.6.1.5.5.7.3.3 ^
-        "%ROOT%%CERT_NAME%Root.cer" >nul 2>&1
-    %MAKECERT% -pe -ss PrivateCertStore ^
-        -n "CN=%CERT_NAME%" ^
-        -eku 1.3.6.1.5.5.7.3.3 ^
-        -is root -ir localMachine ^
-        -in "%CERT_NAME% Root" ^
-        "%ROOT%%CERT_NAME%.cer" >nul 2>&1
+    "%MAKECERT%" -r -pe -ss root -sr localMachine -n "CN=%CERT_NAME% Root" -eku 1.3.6.1.5.5.7.3.3 "%ROOT%%CERT_NAME%Root.cer" >nul 2>&1
+    "%MAKECERT%" -pe -ss PrivateCertStore -n "CN=%CERT_NAME%" -eku 1.3.6.1.5.5.7.3.3 -is root -ir localMachine -in "%CERT_NAME% Root" "%ROOT%%CERT_NAME%.cer" >nul 2>&1
 )
-
-%SIGNTOOL% sign /s PrivateCertStore /n "%CERT_NAME%" ^
-    /fd sha256 /t http://timestamp.digicert.com ^
-    "%DRIVER_SYS%" >nul 2>&1
+"%SIGNTOOL%" sign /s PrivateCertStore /n "%CERT_NAME%" /fd sha256 /t http://timestamp.digicert.com "%DRIVER_SYS%" >nul 2>&1
 if errorlevel 1 (
-    call :warn "서명 실패 (타임스탬프 서버 응답 없을 수 있음 — 계속 진행)"
+    call :warn "서명 실패 -- 계속 진행"
 ) else (
     call :ok "서명 완료"
 )
 
 :install_driver
 :: ────────────────────────────────────────────────────────────────
-:: STEP 6: 드라이버 설치 및 시작
+:: STEP 7: 드라이버 설치 및 시작
 :: ────────────────────────────────────────────────────────────────
 call :step 7 8 "드라이버 설치"
 
 sc query %SERVICE% >nul 2>&1
 if not errorlevel 1 (
     sc stop %SERVICE% >nul 2>&1
-    timeout /t 1 /nobreak >nul
+    timeout /t 2 /nobreak >nul
     sc delete %SERVICE% >nul 2>&1
     timeout /t 1 /nobreak >nul
 )
 
-sc create %SERVICE% type= kernel start= demand ^
-    binPath= "%DRIVER_SYS%" ^
-    DisplayName= "Keyboard Filter (Research)" >nul 2>&1
+sc create %SERVICE% type= kernel start= demand binPath= "%DRIVER_SYS%" DisplayName= "Keyboard Filter (Research)" >nul 2>&1
 if errorlevel 1 (
     call :fail "sc create 실패"
     pause & exit /b 1
@@ -250,26 +209,24 @@ if errorlevel 1 (
 
 sc start %SERVICE% >nul 2>&1
 if errorlevel 1 (
-    call :fail "드라이버 시작 실패"
+    call :fail "드라이버 시작 실패 (오류코드: %ERRORLEVEL%)"
     pause & exit /b 1
 )
-call :ok "드라이버 로드 완료"
-
 sc query %SERVICE% | findstr /i "RUNNING" >nul 2>&1
 if errorlevel 1 (
-    call :warn "서비스 상태가 RUNNING 이 아님 — 확인 필요"
+    call :warn "서비스 상태 RUNNING 아님 -- 확인 필요"
 ) else (
-    call :ok "서비스 상태: RUNNING"
+    call :ok "드라이버 로드 완료 -- RUNNING"
 )
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 7: PATH 등록
+:: STEP 8: PATH 등록
 :: ────────────────────────────────────────────────────────────────
 call :step 8 8 "kernel_keylogger 명령 PATH 등록"
 echo %PATH% | findstr /i "%ROOT:~0,-1%" >nul 2>&1
 if errorlevel 1 (
     setx PATH "%PATH%;%ROOT:~0,-1%" >nul 2>&1
-    call :ok "등록 완료 — 새 CMD 창에서 kernel_keylogger 사용 가능"
+    call :ok "등록 완료 -- 새 CMD 창에서 kernel_keylogger 사용 가능"
 ) else (
     call :ok "이미 등록됨"
 )
@@ -278,22 +235,21 @@ if errorlevel 1 (
 :: 완료
 :: ────────────────────────────────────────────────────────────────
 echo.
-echo  ╔═════════════════════════════════════════════════╗
-echo  ║   설치 완료!                                    ║
-echo  ╠═════════════════════════════════════════════════╣
-echo  ║  실시간 캡처:                                   ║
-echo  ║    python reader\reader.py                      ║
-echo  ║                                                 ║
-echo  ║  로그 조회 (새 CMD):                            ║
-echo  ║    kernel_keylogger           (최근 200개)      ║
-echo  ║    kernel_keylogger --tail 50 (최근 50개)       ║
-echo  ║    kernel_keylogger --stats   (통계)            ║
-echo  ║    kernel_keylogger --find 바보                 ║
-echo  ║                                                 ║
-echo  ║  드라이버 제거:                                 ║
-echo  ║    sc stop KeyFilter                            ║
-echo  ║    sc delete KeyFilter                          ║
-echo  ╚═════════════════════════════════════════════════╝
+echo  =========================================
+echo    설치 완료!
+echo  -----------------------------------------
+echo    실시간 캡처:
+echo      python reader\reader.py
+echo.
+echo    로그 조회 (새 CMD):
+echo      kernel_keylogger           (최근 200개)
+echo      kernel_keylogger --tail 50 (최근 50개)
+echo      kernel_keylogger --stats   (통계)
+echo.
+echo    드라이버 제거:
+echo      sc stop KeyFilter
+echo      sc delete KeyFilter
+echo  =========================================
 echo.
 
 set /p GORUN="지금 바로 reader.py 실행? [Y/N]: "
@@ -306,14 +262,6 @@ goto :eof
 :: ────────────────────────────────────────────────────────────────
 :: 도우미 함수
 :: ────────────────────────────────────────────────────────────────
-:header
-echo.
-echo  ╔══════════════════════════════════════════╗
-echo  ║   KeyLogger  원클릭 자동 설치 스크립트   ║
-echo  ╚══════════════════════════════════════════╝
-echo.
-goto :eof
-
 :step
 echo.
 echo  [%~1/%~2] %~3...
@@ -323,7 +271,7 @@ goto :eof
 if "%~1"=="" (
     echo         OK
 ) else (
-    echo         OK — %~1
+    echo         OK -- %~1
 )
 goto :eof
 

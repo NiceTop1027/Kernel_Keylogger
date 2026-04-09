@@ -1,0 +1,23 @@
+# 빌드 결과물
+driver/bin/
+driver/x64/
+driver/*.sys
+driver/*.pdb
+driver/*.obj
+driver/*.log
+*.cer
+*.cert
+
+# DB / 로그 (민감 데이터)
+keylog.db
+*.txt
+!requirements.txt
+
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+
+# Windows
+Thumbs.db
+desktop.ini

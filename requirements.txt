@@ -1,0 +1,6 @@
+# KeyLogger Python 의존성
+# 현재 모든 모듈이 Python 표준 라이브러리만 사용하므로 외부 패키지 없음.
+# 추후 추가 패키지가 생기면 여기에 기입.
+#
+# 사용 중인 표준 라이브러리:
+#   argparse, ctypes, io, struct, sys, time, datetime, sqlite3, os, csv

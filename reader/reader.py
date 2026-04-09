@@ -47,7 +47,7 @@ INVALID_HANDLE       = ctypes.wintypes.HANDLE(-1).value
 IOCTL_KEYFILTER_READ = 0x000B2000   # CTL_CODE(0xB, 0x800, 0, 0)
 # 계산: (0xB<<16)|(0<<14)|(0x800<<2)|0 = 0xB0000|0|0x2000|0 = 0x000B2000
 
-KEY_RECORD_FMT  = "<qHH"            # int64 + uint16 + uint16 = 12 bytes
+KEY_RECORD_FMT  = "<qHHHH"          # int64 + uint16*4 = 16 bytes (Timestamp+UnitId+MakeCode+Flags+Reserved)
 KEY_RECORD_SIZE = struct.calcsize(KEY_RECORD_FMT)
 RECORDS_PER_CALL = 64
 BUFFER_SIZE      = KEY_RECORD_SIZE * RECORDS_PER_CALL
@@ -125,8 +125,9 @@ class KeyboardState:
             self._ks[self.VK_SHIFT]  = pressed or self._ks[self.VK_LSHIFT]
         elif scan_code == 0x1D:                        # Ctrl
             vk = self.VK_RCTRL if (flags & KEY_E0) else self.VK_LCTRL
-            self._ks[vk]             = pressed
-            self._ks[self.VK_CONTROL] = pressed
+            self._ks[vk]              = pressed
+            other = self.VK_LCTRL if vk == self.VK_RCTRL else self.VK_RCTRL
+            self._ks[self.VK_CONTROL] = pressed or self._ks[other]
         elif scan_code == 0x38:                        # Alt
             self._ks[self.VK_MENU]   = pressed
         elif scan_code == 0x3A and down:               # CapsLock 토글
@@ -241,7 +242,7 @@ class KeyFilterReader:
         records = []
         n = returned.value // KEY_RECORD_SIZE
         for i in range(n):
-            ts_100ns, make_code, flags = struct.unpack_from(
+            ts_100ns, _, make_code, flags, _ = struct.unpack_from(
                 KEY_RECORD_FMT, buf, i * KEY_RECORD_SIZE
             )
             records.append((filetime_to_datetime(ts_100ns), make_code, flags))

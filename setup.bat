@@ -8,14 +8,13 @@ title KeyLogger Setup
 ::
 ::  자동 처리 항목:
 ::    [0] 관리자 권한 확인
-::    [1] 테스트 서명 모드 활성화
-::    [2] Python 자동 설치 (winget)
-::    [3] pip 패키지 설치 (requirements.txt)
-::    [4] WDK / VS2022 확인
-::    [5] 드라이버 빌드 (KeyFilter.sys)
-::    [6] 드라이버 서명 (테스트 인증서 자동 생성)
-::    [7] 드라이버 설치 및 시작
-::    [8] PATH 등록 (kernel_keylogger 명령)
+::    [1] Python 자동 설치 (winget)
+::    [2] pip 패키지 설치 (requirements.txt)
+::    [3] WDK / VS2022 확인
+::    [4] 드라이버 빌드 (KeyFilter.sys)
+::    [5] 드라이버 서명 (테스트 인증서 자동 생성)
+::    [6] 드라이버 설치 및 시작
+::    [7] PATH 등록 (kernel_keylogger 명령)
 ::
 ::  필수 조건: Windows 10/11 VM + 관리자 권한
 :: ================================================================
@@ -32,7 +31,7 @@ call :header
 :: ────────────────────────────────────────────────────────────────
 :: STEP 0: 관리자 권한
 :: ────────────────────────────────────────────────────────────────
-call :step 0 8 "관리자 권한 확인"
+call :step 0 7 "관리자 권한 확인"
 net session >nul 2>&1
 if errorlevel 1 (
     call :fail "관리자 권한 없음 — 우클릭 후 '관리자로 실행'"
@@ -41,25 +40,9 @@ if errorlevel 1 (
 call :ok
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 1: 테스트 서명 모드
+:: STEP 1: Python 설치
 :: ────────────────────────────────────────────────────────────────
-call :step 1 8 "테스트 서명 모드 확인"
-for /f "tokens=2*" %%a in ('bcdedit 2^>nul ^| findstr /i "testsigning"') do set TESTSIGN=%%b
-if /i "!TESTSIGN!"=="Yes" (
-    call :ok "이미 활성화됨"
-) else (
-    bcdedit /set testsigning on >nul 2>&1
-    if errorlevel 1 (
-        call :warn "활성화 실패 — Secure Boot 꺼져 있어야 함. VM 설정 확인"
-    ) else (
-        call :ok "활성화 완료 (재부팅 후 완전 적용)"
-    )
-)
-
-:: ────────────────────────────────────────────────────────────────
-:: STEP 2: Python 설치
-:: ────────────────────────────────────────────────────────────────
-call :step 2 8 "Python 확인 및 설치"
+call :step 1 7 "Python 확인 및 설치"
 python --version >nul 2>&1
 if not errorlevel 1 (
     for /f "tokens=*" %%v in ('python --version 2^>^&1') do call :ok "%%v 발견"
@@ -84,7 +67,7 @@ if errorlevel 1 (
 )
 
 :: PATH 갱신 후 재확인
-call refreshenv >nul 2>&1
+for /f "skip=2 tokens=3*" %%a in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set "UPATH=%%a %%b"
 python --version >nul 2>&1
 if errorlevel 1 (
     call :warn "설치됐지만 PATH 반영 안 됨 — CMD 재시작 후 재실행 권장"
@@ -94,14 +77,12 @@ if errorlevel 1 (
 
 :pip_install
 :: ────────────────────────────────────────────────────────────────
-:: STEP 3: pip 패키지 설치
+:: STEP 2: pip 패키지 설치
 :: ────────────────────────────────────────────────────────────────
-call :step 3 8 "pip 패키지 설치 (requirements.txt)"
+call :step 2 7 "pip 패키지 설치 (requirements.txt)"
 
-:: pip 자체 업그레이드
 python -m pip install --upgrade pip --quiet 2>nul
 
-:: requirements.txt 설치
 if exist "%ROOT%requirements.txt" (
     python -m pip install -r "%ROOT%requirements.txt" --quiet 2>nul
     if errorlevel 1 (
@@ -113,7 +94,6 @@ if exist "%ROOT%requirements.txt" (
     call :ok "requirements.txt 없음 — 건너뜀"
 )
 
-:: Python 모듈 임포트 검증
 python -c "import ctypes, sqlite3, struct, argparse; print('stdlib OK')" >nul 2>&1
 if errorlevel 1 (
     call :fail "Python 표준 라이브러리 임포트 실패"
@@ -122,9 +102,9 @@ if errorlevel 1 (
 call :ok "Python 모듈 검증 완료"
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 4: Visual Studio 2022 + WDK 확인
+:: STEP 3: Visual Studio 2022 + WDK 확인
 :: ────────────────────────────────────────────────────────────────
-call :step 4 8 "Visual Studio 2022 + WDK 확인"
+call :step 3 7 "Visual Studio 2022 + WDK 확인"
 
 set MSBUILD=
 for %%e in (Community Professional Enterprise BuildTools) do (
@@ -145,20 +125,19 @@ if not defined MSBUILD (
 )
 call :ok "MSBuild 발견"
 
-:: WDK 확인
 set WDK_FOUND=0
 for /d %%v in ("%ProgramFiles(x86)%\Windows Kits\10\bin\10.*") do (
     if exist "%%v\x64\makecert.exe" set WDK_FOUND=1
 )
 if "!WDK_FOUND!"=="0" (
-    call :warn "WDK 없음 — 서명 없이 빌드 진행 (테스트 서명 모드에서는 동작)"
+    call :warn "WDK 없음 — 서명 없이 빌드 진행"
     echo         WDK 설치: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
 )
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 5: 드라이버 빌드
+:: STEP 4: 드라이버 빌드
 :: ────────────────────────────────────────────────────────────────
-call :step 5 8 "드라이버 빌드"
+call :step 4 7 "드라이버 빌드"
 if not exist "%DRIVER_SRC%\KeyFilter.vcxproj" (
     call :fail "KeyFilter.vcxproj 없음: %DRIVER_SRC%"
     pause & exit /b 1
@@ -178,7 +157,6 @@ call :ok "KeyFilter.sys 생성 완료"
 goto :sign
 
 :skip_build
-:: 기존 .sys 파일 있는지 확인
 if not exist "%DRIVER_SYS%" (
     call :fail "KeyFilter.sys 없음 — 빌드 없이 설치 불가"
     pause & exit /b 1
@@ -187,9 +165,9 @@ call :warn "기존 KeyFilter.sys 사용"
 
 :sign
 :: ────────────────────────────────────────────────────────────────
-:: STEP 6: 드라이버 서명
+:: STEP 5: 드라이버 서명
 :: ────────────────────────────────────────────────────────────────
-call :step 6 8 "드라이버 서명 (테스트 인증서)"
+call :step 5 7 "드라이버 서명 (테스트 인증서)"
 
 set MAKECERT=
 set SIGNTOOL=
@@ -201,11 +179,10 @@ for /d %%v in ("%ProgramFiles(x86)%\Windows Kits\10\bin\10.*") do (
 )
 
 if not defined MAKECERT (
-    call :warn "WDK 서명 도구 없음 — 서명 건너뜀 (테스트 서명 모드에서 무서명도 로드 가능)"
+    call :warn "WDK 서명 도구 없음 — 서명 건너뜀"
     goto :install_driver
 )
 
-:: 인증서 없으면 생성
 certutil -store PrivateCertStore "%CERT_NAME%" >nul 2>&1
 if errorlevel 1 (
     %MAKECERT% -r -pe -ss root -sr localMachine ^
@@ -231,9 +208,9 @@ if errorlevel 1 (
 
 :install_driver
 :: ────────────────────────────────────────────────────────────────
-:: STEP 7: 드라이버 설치 및 시작
+:: STEP 6: 드라이버 설치 및 시작
 :: ────────────────────────────────────────────────────────────────
-call :step 7 8 "드라이버 설치"
+call :step 6 7 "드라이버 설치"
 
 sc query %SERVICE% >nul 2>&1
 if not errorlevel 1 (
@@ -253,14 +230,11 @@ if errorlevel 1 (
 
 sc start %SERVICE% >nul 2>&1
 if errorlevel 1 (
-    call :fail "드라이버 시작 실패 — 재부팅 후 다시 실행하세요 (testsigning 적용 위해)"
-    echo.
-    echo    재부팅 후:  setup.bat  다시 실행
+    call :fail "드라이버 시작 실패"
     pause & exit /b 1
 )
 call :ok "드라이버 로드 완료"
 
-:: 확인
 sc query %SERVICE% | findstr /i "RUNNING" >nul 2>&1
 if errorlevel 1 (
     call :warn "서비스 상태가 RUNNING 이 아님 — 확인 필요"
@@ -269,9 +243,9 @@ if errorlevel 1 (
 )
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 8: PATH 등록
+:: STEP 7: PATH 등록
 :: ────────────────────────────────────────────────────────────────
-call :step 8 8 "kernel_keylogger 명령 PATH 등록"
+call :step 7 7 "kernel_keylogger 명령 PATH 등록"
 echo %PATH% | findstr /i "%ROOT:~0,-1%" >nul 2>&1
 if errorlevel 1 (
     setx PATH "%PATH%;%ROOT:~0,-1%" >nul 2>&1

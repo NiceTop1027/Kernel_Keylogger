@@ -95,13 +95,7 @@ call :ok "Python 모듈 검증 완료"
 :: ────────────────────────────────────────────────────────────────
 call :step 4 8 "Visual Studio 2022 + WDK 확인 및 설치"
 
-set MSBUILD=
-for %%e in (Community Professional Enterprise BuildTools) do (
-    if exist "%ProgramFiles%\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\MSBuild.exe" (
-        set "MSBUILD=%ProgramFiles%\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\MSBuild.exe"
-    )
-)
-
+call :find_msbuild
 if not defined MSBUILD (
     echo         VS2022 없음 -- winget 으로 자동 설치 중... (수분 소요)
     winget install -e --id Microsoft.VisualStudio.2022.BuildTools --silent --accept-package-agreements --accept-source-agreements --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
@@ -109,11 +103,7 @@ if not defined MSBUILD (
         call :fail "VS2022 설치 실패 -- https://aka.ms/vs/17/release/vs_buildtools.exe 수동 설치"
         pause & exit /b 1
     )
-    for %%e in (Community Professional Enterprise BuildTools) do (
-        if exist "%ProgramFiles%\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\MSBuild.exe" (
-            set "MSBUILD=%ProgramFiles%\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\MSBuild.exe"
-        )
-    )
+    call :find_msbuild
     if not defined MSBUILD (
         call :fail "VS2022 설치됐지만 MSBuild 경로를 찾지 못함 -- CMD 재시작 후 재실행"
         pause & exit /b 1
@@ -262,6 +252,25 @@ goto :eof
 :: ────────────────────────────────────────────────────────────────
 :: 도우미 함수
 :: ────────────────────────────────────────────────────────────────
+:find_msbuild
+set MSBUILD=
+:: 1) vswhere.exe (VS 설치 시 자동 포함되는 공식 탐색 도구)
+set VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe
+if exist "%VSWHERE%" (
+    for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe 2^>nul`) do set "MSBUILD=%%i"
+)
+:: 2) 수동 경로 탐색 (x64 및 x86 모두)
+if not defined MSBUILD (
+    for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
+        for %%e in (Community Professional Enterprise BuildTools) do (
+            if exist "%%~p\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\MSBuild.exe" (
+                set "MSBUILD=%%~p\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\MSBuild.exe"
+            )
+        )
+    )
+)
+goto :eof
+
 :step
 echo.
 echo  [%~1/%~2] %~3...

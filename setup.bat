@@ -126,6 +126,7 @@ for /d %%v in ("%ProgramFiles(x86)%\Windows Kits\10\bin\10.*") do (
     if exist "%%v\x64\makecert.exe" set WDK_BIN_OK=1
 )
 
+set WDK_JUST_INSTALLED=0
 if "!WDK_BIN_OK!"=="0" (
     echo         WDK 없음 -- 자동 설치 중... (수분 소요)
     set "WDK_SETUP=%TEMP%\wdksetup.exe"
@@ -137,6 +138,7 @@ if "!WDK_BIN_OK!"=="0" (
     )
     "%TEMP%\wdksetup.exe" /quiet /norestart
     del /f /q "%TEMP%\wdksetup.exe" >nul 2>&1
+    set WDK_JUST_INSTALLED=1
     call :ok "WDK 설치 완료"
 ) else (
     call :ok "WDK 이미 설치됨 -- VS 통합만 재시도"
@@ -148,12 +150,32 @@ call :install_wdk_vsix
 :: 통합 재확인
 call :check_wdk_vs
 if "!WDK_VS_OK!"=="1" (
+    reg delete "%REG_KEY%" /v "WDKRebootDone" /f >nul 2>&1
     call :ok "WDK VS 통합 완료"
     goto :build
 )
 
-:: 아직도 안 됨 → 재부팅 필요
-:: 재부팅 플래그 확인 (무한 루프 방지: 이미 한 번 재부팅했으면 에러 처리)
+:: VSIX 파일 자체를 못 찾은 경우 → 재부팅해도 소용없음, 즉시 에러
+if "!VSIX_NOT_FOUND!"=="1" (
+    reg delete "%REG_KEY%" /v "WDKRebootDone" /f >nul 2>&1
+    call :fail "WDK.vsix 파일을 찾을 수 없음 -- WDK를 수동 재설치하세요"
+    echo.
+    echo         설치 경로 확인:  dir "%ProgramFiles(x86)%\Windows Kits\10\vsix\" /s /b
+    echo         수동 설치: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
+    echo.
+    pause & exit /b 1
+)
+
+:: WDK를 이미 설치된 상태에서 VSIX 적용이 안 됐으면 재부팅해도 소용없음
+if "!WDK_JUST_INSTALLED!"=="0" (
+    reg delete "%REG_KEY%" /v "WDKRebootDone" /f >nul 2>&1
+    call :fail "WDK VS 통합 실패 -- VSIXInstaller 오류"
+    echo         WDK 수동 재설치: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
+    pause & exit /b 1
+)
+
+:: WDK를 방금 설치했는데 통합 안 됨 → 재부팅으로 해결 가능
+:: 재부팅 플래그 확인 (이미 재부팅했으면 무한 루프 방지)
 reg query "%REG_KEY%" /v "WDKRebootDone" >nul 2>&1
 if not errorlevel 1 (
     reg delete "%REG_KEY%" /v "WDKRebootDone" /f >nul 2>&1
@@ -162,7 +184,7 @@ if not errorlevel 1 (
     pause & exit /b 1
 )
 
-:: 첫 재부팅: 플래그 기록 후 재부팅 (재부팅 후 자동 재실행)
+:: 첫 재부팅: 플래그 기록 후 재부팅
 call :warn "WDK VS 통합 적용을 위해 재부팅 필요 -- 5초 후 자동 재부팅"
 reg add "%REG_KEY%" /v "WDKRebootDone" /t REG_SZ /d "1" /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" ^
@@ -340,6 +362,9 @@ goto :eof
 
 :: WDK.vsix 를 VSIXInstaller 로 VS2022 에 통합
 :install_wdk_vsix
+set VSIX_NOT_FOUND=0
+
+:: VSIXInstaller 탐색
 set VSIXINSTALLER=
 for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
     for %%e in (Community Professional Enterprise BuildTools) do (
@@ -352,15 +377,42 @@ if not defined VSIXINSTALLER (
     call :warn "VSIXInstaller 없음 -- WDK VS 통합 건너뜀"
     goto :eof
 )
+
+:: WDK.vsix 탐색 (경로 3단계로 확인)
 set WDK_VSIX=
-for /d %%v in ("%ProgramFiles(x86)%\Windows Kits\10\vsix\*") do (
-    if exist "%%v\WDK.vsix" set "WDK_VSIX=%%v\WDK.vsix"
+
+:: 1) flat 경로 (최신 WDK 10.0.26100+)
+if exist "%ProgramFiles(x86)%\Windows Kits\10\vsix\WDK.vsix" (
+    set "WDK_VSIX=%ProgramFiles(x86)%\Windows Kits\10\vsix\WDK.vsix"
 )
+:: 2) vs17 하위폴더 (VS2022 전용 경로)
 if not defined WDK_VSIX (
+    if exist "%ProgramFiles(x86)%\Windows Kits\10\vsix\vs17\WDK.vsix" (
+        set "WDK_VSIX=%ProgramFiles(x86)%\Windows Kits\10\vsix\vs17\WDK.vsix"
+    )
+)
+:: 3) 버전 번호 하위폴더 탐색
+if not defined WDK_VSIX (
+    for /d %%v in ("%ProgramFiles(x86)%\Windows Kits\10\vsix\*") do (
+        if exist "%%v\WDK.vsix" set "WDK_VSIX=%%v\WDK.vsix"
+    )
+)
+:: 4) PowerShell 로 전체 하위 탐색 (위에서 못 찾은 경우 최후 수단)
+if not defined WDK_VSIX (
+    for /f "usebackq delims=" %%f in (`powershell -NoProfile -Command ^
+        "Get-ChildItem '%ProgramFiles(x86)%\Windows Kits\10' -Recurse -Filter 'WDK.vsix' 2>$null | Select-Object -First 1 -ExpandProperty FullName"`) do (
+        set "WDK_VSIX=%%f"
+    )
+)
+
+if not defined WDK_VSIX (
+    set VSIX_NOT_FOUND=1
     call :warn "WDK.vsix 없음 -- WDK VS 통합 건너뜀"
     goto :eof
 )
-"%VSIXINSTALLER%" /q "%WDK_VSIX%" >nul 2>&1
+
+echo         WDK.vsix 발견: !WDK_VSIX!
+"%VSIXINSTALLER%" /q "!WDK_VSIX!" >nul 2>&1
 call :ok "WDK VS 통합 완료 (WindowsKernelModeDriver10.0)"
 goto :eof
 

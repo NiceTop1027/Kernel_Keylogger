@@ -354,7 +354,7 @@ goto :eof
 set VSIX_OK=0
 set VSIX_NOT_FOUND=0
 
-:: Find WDK.vsix (PowerShell recursive search as final fallback)
+:: Find WDK.vsix
 set WDK_VSIX=
 if exist "%ProgramFiles(x86)%\Windows Kits\10\vsix\WDK.vsix" (
     set "WDK_VSIX=%ProgramFiles(x86)%\Windows Kits\10\vsix\WDK.vsix"
@@ -397,35 +397,71 @@ if not defined VS_MSDIR (
 )
 echo         VS MSBuild: !VS_MSDIR!
 
-:: Write PowerShell script to temp file (avoids inline escaping issues)
-set "PS1=%TEMP%\wdk_vsix_install.ps1"
-> "%PS1%" echo $ErrorActionPreference = 'Stop'
->> "%PS1%" echo $vsix  = '%WDK_VSIX%'
->> "%PS1%" echo $msdir = '%VS_MSDIR%'
->> "%PS1%" echo $dest  = "$msdir\Microsoft\WindowsDriver"
->> "%PS1%" echo $tmp   = "$env:TEMP\WDKVsixExtract"
->> "%PS1%" echo try {
->> "%PS1%" echo   if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
->> "%PS1%" echo   New-Item -ItemType Directory $tmp -Force ^| Out-Null
->> "%PS1%" echo   $zip = "$tmp\wdk.zip"
->> "%PS1%" echo   Copy-Item -LiteralPath $vsix $zip
->> "%PS1%" echo   Expand-Archive -LiteralPath $zip "$tmp\content" -Force
->> "%PS1%" echo   $d = Get-ChildItem "$tmp\content" -Recurse -Directory -Filter WindowsDriver ^| Select-Object -First 1
->> "%PS1%" echo   if (-not $d) { throw "WindowsDriver dir not found in VSIX" }
->> "%PS1%" echo   New-Item -ItemType Directory $dest -Force ^| Out-Null
->> "%PS1%" echo   Copy-Item "$($d.FullName)\*" $dest -Recurse -Force
->> "%PS1%" echo   Write-Host "Copied: $($d.FullName) -> $dest"
->> "%PS1%" echo   Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
->> "%PS1%" echo } catch { Write-Host "FAIL: $_"; exit 1 }
+:: Write Python script via setlocal DisableDelayedExpansion
+:: (avoids ! expansion, parentheses written as ^( ^) )
+set "PY=%TEMP%\wdk_install.py"
+setlocal DisableDelayedExpansion
+> "%PY%" (
+echo import zipfile, os, shutil, sys
+echo vsix = sys.argv[1]
+echo dest = sys.argv[2]
+echo tmp  = os.path.join^(os.environ.get^('TEMP', r'C:\Temp'^), 'WDKVsixExtract'^)
+echo try:
+echo     if os.path.exists^(tmp^): shutil.rmtree^(tmp, ignore_errors=True^)
+echo     os.makedirs^(tmp, exist_ok=True^)
+echo     print^('Extracting:', vsix^)
+echo     with zipfile.ZipFile^(vsix, 'r'^) as z:
+echo         z.extractall^(tmp^)
+echo         tops = sorted^(set^(n.split^('/'^)[0] for n in z.namelist^(^)^)^)
+echo         print^('VSIX top-level:', tops^)
+echo     found = False
+echo     for root, dirs, files in os.walk^(tmp^):
+echo         for d in dirs:
+echo             if d == 'WindowsDriver':
+echo                 src = os.path.join^(root, d^)
+echo                 print^('WindowsDriver found:', src^)
+echo                 if os.path.exists^(dest^): shutil.rmtree^(dest^)
+echo                 shutil.copytree^(src, dest^)
+echo                 print^('Copied to:', dest^)
+echo                 found = True
+echo                 break
+echo         if found: break
+echo     if not found:
+echo         for root, dirs, files in os.walk^(tmp^):
+echo             for d in dirs:
+echo                 if 'MSBuild' in d:
+echo                     src = os.path.join^(root, d^)
+echo                     vsms = os.path.dirname^(dest^)
+echo                     print^('MSBuild dir:', src, '->', vsms^)
+echo                     for item in os.listdir^(src^):
+echo                         s = os.path.join^(src, item^)
+echo                         dd = os.path.join^(vsms, item^)
+echo                         if os.path.isdir^(s^):
+echo                             if os.path.exists^(dd^): shutil.rmtree^(dd^)
+echo                             shutil.copytree^(s, dd^)
+echo                         else:
+echo                             shutil.copy2^(s, dd^)
+echo                     found = True
+echo     if not found:
+echo         print^('ERROR: no WindowsDriver or MSBuild dir found'^)
+echo         for root, dirs, files in os.walk^(tmp^): print^(' DIR:', root^)
+echo         sys.exit^(1^)
+echo     shutil.rmtree^(tmp, ignore_errors=True^)
+echo     print^('Done'^)
+echo except Exception as e:
+echo     print^('FAIL:', e^)
+echo     sys.exit^(1^)
+)
+endlocal
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%"
+python "%PY%" "%WDK_VSIX%" "%VS_MSDIR%\Microsoft\WindowsDriver"
 if errorlevel 1 (
-    call :warn "VSIX 수동 추출 실패"
+    call :warn "VSIX 추출 실패 -- 위 출력으로 원인 확인"
 ) else (
     set VSIX_OK=1
     call :ok "WDK VS 통합 완료 (WindowsKernelModeDriver10.0)"
 )
-del /f /q "%PS1%" >nul 2>&1
+del /f /q "%PY%" >nul 2>&1
 goto :eof
 
 :find_msbuild

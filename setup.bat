@@ -354,20 +354,7 @@ goto :eof
 set VSIX_OK=0
 set VSIX_NOT_FOUND=0
 
-set VSIXINSTALLER=
-for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
-    for %%e in (Community Professional Enterprise BuildTools) do (
-        if exist "%%~p\Microsoft Visual Studio\2022\%%e\Common7\IDE\VSIXInstaller.exe" (
-            set "VSIXINSTALLER=%%~p\Microsoft Visual Studio\2022\%%e\Common7\IDE\VSIXInstaller.exe"
-        )
-    )
-)
-if not defined VSIXINSTALLER (
-    call :warn "VSIXInstaller 없음 -- WDK VS 통합 건너뜀"
-    set VSIX_NOT_FOUND=1
-    goto :eof
-)
-
+:: Find WDK.vsix (PowerShell recursive search as final fallback)
 set WDK_VSIX=
 if exist "%ProgramFiles(x86)%\Windows Kits\10\vsix\WDK.vsix" (
     set "WDK_VSIX=%ProgramFiles(x86)%\Windows Kits\10\vsix\WDK.vsix"
@@ -388,21 +375,57 @@ if not defined WDK_VSIX (
         set "WDK_VSIX=%%f"
     )
 )
-
 if not defined WDK_VSIX (
     set VSIX_NOT_FOUND=1
-    call :warn "WDK.vsix 없음 -- WDK VS 통합 건너뜀"
+    call :warn "WDK.vsix 없음"
     goto :eof
 )
+echo         WDK.vsix: !WDK_VSIX!
 
-echo         WDK.vsix 발견: !WDK_VSIX!
-"%VSIXINSTALLER%" /q "!WDK_VSIX!"
+:: Find VS MSBuild root
+set VS_MSDIR=
+for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
+    for %%e in (Community Professional Enterprise BuildTools) do (
+        if exist "%%~p\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\MSBuild.exe" (
+            set "VS_MSDIR=%%~p\Microsoft Visual Studio\2022\%%e\MSBuild"
+        )
+    )
+)
+if not defined VS_MSDIR (
+    call :warn "VS MSBuild 디렉토리 없음"
+    goto :eof
+)
+echo         VS MSBuild: !VS_MSDIR!
+
+:: Write PowerShell script to temp file (avoids inline escaping issues)
+set "PS1=%TEMP%\wdk_vsix_install.ps1"
+> "%PS1%" echo $ErrorActionPreference = 'Stop'
+>> "%PS1%" echo $vsix  = '%WDK_VSIX%'
+>> "%PS1%" echo $msdir = '%VS_MSDIR%'
+>> "%PS1%" echo $dest  = "$msdir\Microsoft\WindowsDriver"
+>> "%PS1%" echo $tmp   = "$env:TEMP\WDKVsixExtract"
+>> "%PS1%" echo try {
+>> "%PS1%" echo   if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
+>> "%PS1%" echo   New-Item -ItemType Directory $tmp -Force ^| Out-Null
+>> "%PS1%" echo   $zip = "$tmp\wdk.zip"
+>> "%PS1%" echo   Copy-Item -LiteralPath $vsix $zip
+>> "%PS1%" echo   Expand-Archive -LiteralPath $zip "$tmp\content" -Force
+>> "%PS1%" echo   $d = Get-ChildItem "$tmp\content" -Recurse -Directory -Filter WindowsDriver ^| Select-Object -First 1
+>> "%PS1%" echo   if (-not $d) { throw "WindowsDriver dir not found in VSIX" }
+>> "%PS1%" echo   New-Item -ItemType Directory $dest -Force ^| Out-Null
+>> "%PS1%" echo   Copy-Item "$($d.FullName)\*" $dest -Recurse -Force
+>> "%PS1%" echo   Write-Host "Copied: $($d.FullName) -> $dest"
+>> "%PS1%" echo   Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+>> "%PS1%" echo } catch { Write-Host "FAIL: $_"; exit 1 }
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%"
 if errorlevel 1 (
-    call :warn "VSIXInstaller 실패 (exit code: %ERRORLEVEL%)"
+    call :warn "VSIX 수동 추출 실패"
 ) else (
     set VSIX_OK=1
     call :ok "WDK VS 통합 완료 (WindowsKernelModeDriver10.0)"
 )
+del /f /q "%PS1%" >nul 2>&1
 goto :eof
 
 :find_msbuild

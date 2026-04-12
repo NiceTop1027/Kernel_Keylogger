@@ -398,63 +398,69 @@ if not defined VS_MSDIR (
 echo         VS MSBuild: !VS_MSDIR!
 
 :: Write Python script via setlocal DisableDelayedExpansion
-:: (avoids ! expansion, parentheses written as ^( ^) )
 set "PY=%TEMP%\wdk_install.py"
 setlocal DisableDelayedExpansion
 > "%PY%" (
 echo import zipfile, os, shutil, sys
+echo.
+echo def merge_copy^(src, dst^):
+echo     os.makedirs^(dst, exist_ok=True^)
+echo     for item in os.listdir^(src^):
+echo         s = os.path.join^(src, item^)
+echo         d = os.path.join^(dst, item^)
+echo         if os.path.isdir^(s^): merge_copy^(s, d^)
+echo         else: shutil.copy2^(s, d^)
+echo.
 echo vsix = sys.argv[1]
 echo dest = sys.argv[2]
-echo tmp  = os.path.join^(os.environ.get^('TEMP', r'C:\Temp'^), 'WDKVsixExtract'^)
+echo tmp  = os.path.join^(os.environ.get^('TEMP','C:\\Temp'^),'WDKVsixExtract'^)
 echo try:
-echo     if os.path.exists^(tmp^): shutil.rmtree^(tmp, ignore_errors=True^)
-echo     os.makedirs^(tmp, exist_ok=True^)
-echo     print^('Extracting:', vsix^)
-echo     with zipfile.ZipFile^(vsix, 'r'^) as z:
+echo     if os.path.exists^(tmp^): shutil.rmtree^(tmp,ignore_errors=True^)
+echo     os.makedirs^(tmp,exist_ok=True^)
+echo     print^('Extracting:',vsix^)
+echo     with zipfile.ZipFile^(vsix,'r'^) as z:
 echo         z.extractall^(tmp^)
-echo         tops = sorted^(set^(n.split^('/'^)[0] for n in z.namelist^(^)^)^)
-echo         print^('VSIX top-level:', tops^)
-echo     found = False
-echo     for root, dirs, files in os.walk^(tmp^):
+echo         tops=sorted^(set^(n.split^('/'^)[0] for n in z.namelist^(^)^)^)
+echo         print^('VSIX top-level:',tops^)
+echo     found=False
+echo     for root,dirs,files in os.walk^(tmp^):
 echo         for d in dirs:
-echo             if d == 'WindowsDriver':
-echo                 src = os.path.join^(root, d^)
-echo                 print^('WindowsDriver found:', src^)
-echo                 if os.path.exists^(dest^): shutil.rmtree^(dest^)
-echo                 shutil.copytree^(src, dest^)
-echo                 print^('Copied to:', dest^)
-echo                 found = True
+echo             if '$MSBuild$' in d:
+echo                 src=os.path.join^(root,d^)
+echo                 print^('$MSBuild$ found:',src,'->',dest^)
+echo                 merge_copy^(src,dest^)
+echo                 found=True
 echo                 break
 echo         if found: break
 echo     if not found:
-echo         for root, dirs, files in os.walk^(tmp^):
+echo         print^('No $MSBuild$ dir. Trying WindowsDriver...'^)
+echo         for root,dirs,files in os.walk^(tmp^):
 echo             for d in dirs:
-echo                 if 'MSBuild' in d:
-echo                     src = os.path.join^(root, d^)
-echo                     vsms = os.path.dirname^(dest^)
-echo                     print^('MSBuild dir:', src, '->', vsms^)
-echo                     for item in os.listdir^(src^):
-echo                         s = os.path.join^(src, item^)
-echo                         dd = os.path.join^(vsms, item^)
-echo                         if os.path.isdir^(s^):
-echo                             if os.path.exists^(dd^): shutil.rmtree^(dd^)
-echo                             shutil.copytree^(s, dd^)
-echo                         else:
-echo                             shutil.copy2^(s, dd^)
-echo                     found = True
+echo                 if d=='WindowsDriver':
+echo                     src=os.path.join^(root,d^)
+echo                     wd=os.path.join^(dest,'Microsoft','WindowsDriver'^)
+echo                     print^('WindowsDriver:',src,'->',wd^)
+echo                     if os.path.exists^(wd^): shutil.rmtree^(wd^)
+echo                     shutil.copytree^(src,wd^)
+echo                     found=True
+echo                     break
+echo             if found: break
 echo     if not found:
-echo         print^('ERROR: no WindowsDriver or MSBuild dir found'^)
-echo         for root, dirs, files in os.walk^(tmp^): print^(' DIR:', root^)
+echo         print^('Fallback: dump all VSIX dirs:'^)
+echo         for root,dirs,files in os.walk^(tmp^): print^(' ',root^)
 echo         sys.exit^(1^)
-echo     shutil.rmtree^(tmp, ignore_errors=True^)
+echo     ts=os.path.join^(dest,'Microsoft','VC','v170','Platforms','x64',
+echo                    'PlatformToolsets','WindowsKernelModeDriver10.0'^)
+echo     if os.path.exists^(ts^): print^('Toolset OK:',ts^)
+echo     else: print^('WARNING: toolset path not found:',ts^)
+echo     shutil.rmtree^(tmp,ignore_errors=True^)
 echo     print^('Done'^)
 echo except Exception as e:
-echo     print^('FAIL:', e^)
-echo     sys.exit^(1^)
+echo     import traceback; print^('FAIL:',e^); traceback.print_exc^(^); sys.exit^(1^)
 )
 endlocal
 
-python "%PY%" "%WDK_VSIX%" "%VS_MSDIR%\Microsoft\WindowsDriver"
+python "%PY%" "%WDK_VSIX%" "%VS_MSDIR%"
 if errorlevel 1 (
     call :warn "VSIX 추출 실패 -- 위 출력으로 원인 확인"
 ) else (

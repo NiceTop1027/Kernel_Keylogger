@@ -1,10 +1,10 @@
-$ErrorActionPreference = "Stop"
-
 param(
     [string]$TextLogPath = (Join-Path $PSScriptRoot "captured_keys_portable.txt"),
     [string]$CsvLogPath = (Join-Path $PSScriptRoot "captured_keys_portable.csv"),
     [switch]$Accept
 )
+
+$ErrorActionPreference = "Stop"
 
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 

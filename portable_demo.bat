@@ -11,4 +11,10 @@ if errorlevel 1 (
 )
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0portable_demo.ps1" %*
-exit /b %errorlevel%
+set ERR=%errorlevel%
+if not "%ERR%"=="0" (
+    echo.
+    echo Portable demo 실행 실패. 위 오류 메시지를 확인하세요.
+    pause
+)
+exit /b %ERR%

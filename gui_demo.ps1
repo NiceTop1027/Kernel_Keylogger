@@ -187,7 +187,18 @@ function Open-DriverHandle {
 
     if ($handle.IsInvalid) {
         $code = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        $script:LastDriverMessage = "Open failed: " + (Get-Win32ErrorMessage -Code $code)
+        $message = Get-Win32ErrorMessage -Code $code
+        if ($code -eq 2) {
+            $script:LastDriverMessage =
+                "Driver not loaded. Run 'setup.bat driver' as Administrator, then retry."
+        }
+        elseif ($code -eq 5) {
+            $script:LastDriverMessage =
+                "Access denied. Start the driver setup from an elevated Administrator shell."
+        }
+        else {
+            $script:LastDriverMessage = "Open failed: " + $message
+        }
         return $null
     }
 

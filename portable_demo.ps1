@@ -120,13 +120,6 @@ try {
         Write-Host $line
     }
 
-    if (-not $Accept) {
-        $answer = Read-Host "Type YES to continue"
-        if (($answer + "").Trim().ToUpper() -ne "YES") {
-            throw "Cancelled by user."
-        }
-    }
-
     Write-Host "Portable Console Demo"
     Write-Host ("TXT log : " + $TextLogPath)
     Write-Host ("CSV log : " + $CsvLogPath)

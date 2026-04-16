@@ -17,8 +17,13 @@ if /i "%~1"=="portable" (
     call "%ROOT%portable_demo.bat" %*
     exit /b %errorlevel%
 )
+if /i "%~1"=="gui" (
+    shift
+    call "%ROOT%gui_demo.bat" %*
+    exit /b %errorlevel%
+)
 
-call "%ROOT%portable_demo.bat" %*
+call "%ROOT%gui_demo.bat" %*
 exit /b %errorlevel%
 
 :driver_install
@@ -28,6 +33,12 @@ echo    Kernel Input Demo 설치 스크립트
 echo  =========================================
 echo.
 echo    설치 없이 바로 실행:
+echo      gui_demo.bat
+echo      kernel_keylogger on
+echo      kernel_keylogger off
+echo      setup.bat
+echo.
+echo    콘솔 포터블:
 echo      portable_demo.bat
 echo      setup.bat portable
 echo.
@@ -42,7 +53,7 @@ call :step 0 8 "관리자 권한 확인"
 net session >nul 2>&1
 if errorlevel 1 (
     call :fail "관리자 권한 없음 -- 우클릭 후 '관리자로 실행'"
-    echo   설치 없이 바로 실행하려면: portable_demo.bat
+    echo   설치 없이 바로 실행하려면: gui_demo.bat
     pause & exit /b 1
 )
 call :ok
@@ -57,7 +68,7 @@ if not errorlevel 1 (
 ) else (
     bcdedit /set testsigning on >nul 2>&1
     if errorlevel 1 (
-        call :fail "활성화 실패 -- Secure Boot 를 끄지 않으려면 portable_demo.bat 를 사용하세요"
+        call :fail "활성화 실패 -- Secure Boot 를 끄지 않으려면 gui_demo.bat 또는 kernel_keylogger on 을 사용하세요"
         pause & exit /b 1
     )
     call :ok "활성화 완료 -- 5초 후 재부팅, 재부팅 후 자동 재실행"
@@ -338,10 +349,12 @@ echo  =========================================
 echo    설치 완료!
 echo  -----------------------------------------
 echo    설치 없이 바로 실행:
-echo      portable_demo.bat
+echo      gui_demo.bat
+echo      kernel_keylogger on
+echo      kernel_keylogger off
 echo.
-echo    콘솔 데모 실행:
-echo      python reader\reader.py
+echo    콘솔 포터블:
+echo      portable_demo.bat
 echo.
 echo    로그 조회 (새 CMD):
 echo      kernel_keylogger           (최근 200개)

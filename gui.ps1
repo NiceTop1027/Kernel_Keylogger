@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$TextLogPath = "",
     [string]$CsvLogPath = "",
     [string]$PidPath = ""

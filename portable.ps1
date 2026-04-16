@@ -14,7 +14,7 @@ if ([string]::IsNullOrWhiteSpace($CsvLogPath)) {
     $CsvLogPath = Join-Path $PSScriptRoot "captured_keys_portable.csv"
 }
 
-$ErrorLogPath = Join-Path $PSScriptRoot "portable_demo_error.log"
+$ErrorLogPath = Join-Path $PSScriptRoot "portable_error.log"
 
 function Ensure-ParentDirectory {
     param([string]$Path)
@@ -110,7 +110,7 @@ try {
     }
 
     $notice = @(
-        "Portable console demo.",
+        "Portable console input.",
         "Scope: current console window only.",
         "No system-wide capture, no background capture, no credential capture.",
         "Press Esc to exit."
@@ -120,7 +120,7 @@ try {
         Write-Host $line
     }
 
-    Write-Host "Portable Console Demo"
+    Write-Host "Portable Console Input"
     Write-Host ("TXT log : " + $TextLogPath)
     Write-Host ("CSV log : " + $CsvLogPath)
     Write-Host "Scope   : current console window only"
@@ -160,7 +160,7 @@ try {
 }
 catch {
     $lines = @()
-    $lines += "=== portable demo error ==="
+    $lines += "=== portable error ==="
     $lines += ("time=" + (Get-Date -Format "o"))
     $lines += ("message=" + $_.Exception.Message)
     if ($_.ScriptStackTrace) {

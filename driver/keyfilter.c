@@ -284,6 +284,6 @@ DriverEntry(
     deviceObject->Flags |= DO_BUFFERED_IO;
     deviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
 
-    DbgPrint("[KeyFilter] Safe demo driver loaded.\n");
+    DbgPrint("[KeyFilter] Safe driver loaded.\n");
     return STATUS_SUCCESS;
 }

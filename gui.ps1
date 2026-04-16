@@ -19,11 +19,11 @@ if ([string]::IsNullOrWhiteSpace($CsvLogPath)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($PidPath)) {
-    $PidPath = Join-Path $PSScriptRoot "gui_demo.pid"
+    $PidPath = Join-Path $PSScriptRoot "gui.pid"
 }
 
-$ErrorLogPath = Join-Path $PSScriptRoot "gui_demo_error.log"
-$MutexName = "Local\KeyboardInputGuiDemo"
+$ErrorLogPath = Join-Path $PSScriptRoot "gui_error.log"
+$MutexName = "Local\KeyboardInputGui"
 $script:CaptureEnabled = $true
 $script:TextLogPath = $TextLogPath
 $script:CsvLogPath = $CsvLogPath
@@ -154,7 +154,7 @@ function Show-Error {
 
     [System.Windows.Forms.MessageBox]::Show(
         $Message + [Environment]::NewLine + "Error log: " + $ErrorLogPath,
-        "Keyboard Input GUI Demo",
+        "Keyboard Input GUI",
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Error
     ) | Out-Null
@@ -173,8 +173,8 @@ try {
     $script:Mutex = New-Object System.Threading.Mutex($true, $MutexName, [ref]$createdNew)
     if (-not $createdNew) {
         [System.Windows.Forms.MessageBox]::Show(
-            "The GUI demo is already running.",
-            "Keyboard Input GUI Demo",
+            "The GUI is already running.",
+            "Keyboard Input GUI",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
         ) | Out-Null
@@ -184,7 +184,7 @@ try {
     Set-Content -LiteralPath $script:PidPath -Encoding ASCII -Value $PID
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "Keyboard Input GUI Demo"
+    $form.Text = "Keyboard Input GUI"
     $form.StartPosition = "CenterScreen"
     $form.Size = New-Object System.Drawing.Size(980, 760)
     $form.MinimumSize = New-Object System.Drawing.Size(900, 680)
@@ -192,7 +192,7 @@ try {
     $form.KeyPreview = $true
 
     $title = New-Object System.Windows.Forms.Label
-    $title.Text = "Keyboard Input GUI Demo"
+    $title.Text = "Keyboard Input GUI"
     $title.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
     $title.Location = New-Object System.Drawing.Point(24, 18)
     $title.AutoSize = $true
@@ -362,7 +362,7 @@ try {
 }
 catch {
     $lines = @()
-    $lines += "=== gui demo error ==="
+    $lines += "=== gui error ==="
     $lines += ("time=" + (Get-Date -Format "o"))
     $lines += ("message=" + $_.Exception.Message)
     if ($_.ScriptStackTrace) {

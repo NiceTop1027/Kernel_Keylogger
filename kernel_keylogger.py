@@ -2,7 +2,7 @@
 kernel_keylogger.py — CMD 조회 도구
 =====================================
 
-안전한 콘솔 입력 데모가 저장한 DB 를 조회합니다.
+안전한 콘솔 입력 기록 DB 를 조회합니다.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ CYAN   = "\033[96m"
 
 def print_header() -> None:
     print(f"\n{BOLD}{'─'*60}{RESET}")
-    print(f"{BOLD}  Console Input Demo DB 조회{RESET}")
+    print(f"{BOLD}  Console Input Log DB 조회{RESET}")
     print(f"  DB: {store.DB_PATH}")
     print(f"{'─'*60}{RESET}\n")
 
@@ -102,7 +102,7 @@ def print_stats(conn) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="kernel_keylogger",
-        description="Console Input Demo DB 조회 도구"
+        description="Console Input Log DB 조회 도구"
     )
     parser.add_argument("--tail",  metavar="N",    type=int, help="최근 N개만 표시")
     parser.add_argument("--find",  metavar="KEY",  type=str, help="특정 키 검색")

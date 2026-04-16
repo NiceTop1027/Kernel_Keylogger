@@ -1,18 +1,18 @@
 @echo off
 setlocal EnableDelayedExpansion
 chcp 65001 >nul 2>&1
-title KeyLogger Setup
+title Kernel Input Demo Setup
 
 set ROOT=%~dp0
 set DRIVER_SRC=%ROOT%driver
 set DRIVER_SYS=%ROOT%driver\KeyFilter.sys
 set SERVICE=KeyFilter
 set CERT_NAME=KeyFilterTestCert
-set REG_KEY=HKLM\SOFTWARE\KeyLoggerSetup
+set REG_KEY=HKLM\SOFTWARE\KernelInputDemoSetup
 
 echo.
 echo  =========================================
-echo    KeyLogger  원클릭 자동 설치 스크립트
+echo    Kernel Input Demo 설치 스크립트
 echo  =========================================
 echo.
 
@@ -42,7 +42,7 @@ if not errorlevel 1 (
     )
     call :ok "활성화 완료 -- 5초 후 재부팅, 재부팅 후 자동 재실행"
     reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" ^
-        /v "KeyLoggerSetup" /t REG_SZ /d "cmd /c \"%~f0\"" /f >nul 2>&1
+        /v "KernelInputDemoSetup" /t REG_SZ /d "cmd /c \"%~f0\"" /f >nul 2>&1
     shutdown /r /t 5 /c "testsigning reboot"
     exit /b 0
 )
@@ -185,7 +185,7 @@ if not errorlevel 1 (
 call :warn "WDK VS 통합 적용을 위해 재부팅 필요 -- 5초 후 자동 재부팅"
 reg add "%REG_KEY%" /v "WDKRebootDone" /t REG_SZ /d "1" /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" ^
-    /v "KeyLoggerSetup" /t REG_SZ /d "cmd /c \"%~f0\"" /f >nul 2>&1
+    /v "KernelInputDemoSetup" /t REG_SZ /d "cmd /c \"%~f0\"" /f >nul 2>&1
 timeout /t 5 /nobreak >nul
 shutdown /r /t 0 /c "WDK VS integration reboot"
 exit /b 0
@@ -282,7 +282,7 @@ if not errorlevel 1 (
 )
 
 sc create %SERVICE% type= kernel start= demand binPath= "%DRIVER_SYS%" ^
-    DisplayName= "Keyboard Filter (Research)" >nul 2>&1
+    DisplayName= "Kernel Input Demo Driver" >nul 2>&1
 if errorlevel 1 (
     call :fail "sc create 실패"
     pause & exit /b 1
@@ -317,13 +317,14 @@ echo.
 echo  =========================================
 echo    설치 완료!
 echo  -----------------------------------------
-echo    실시간 캡처:
+echo    콘솔 데모 실행:
 echo      python reader\reader.py
 echo.
 echo    로그 조회 (새 CMD):
 echo      kernel_keylogger           (최근 200개)
 echo      kernel_keylogger --tail 50 (최근 50개)
 echo      kernel_keylogger --stats   (통계)
+echo      kernel_keylogger --find Enter
 echo.
 echo    드라이버 제거:
 echo      sc stop KeyFilter
@@ -331,7 +332,10 @@ echo      sc delete KeyFilter
 echo  =========================================
 echo.
 
-start "KeyLogger Reader" cmd /k "cd /d %ROOT% && python reader\reader.py"
+set /p GORUN="지금 바로 reader.py 실행? [Y/N]: "
+if /i "!GORUN!"=="Y" (
+    start "KeyFilter Console Demo" cmd /k "cd /d %ROOT% && python reader\reader.py"
+)
 pause
 goto :eof
 

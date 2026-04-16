@@ -74,8 +74,7 @@
 
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
-      <!-- 커널 드라이버 필수 정의 -->
-      <PreprocessorDefinitions>_X86_=1;i386=1;STD_CALL;CONDITION_HANDLING=1;NT_UP=1;NT_INST=0;WIN32=100;_NT1X_=100;WINNT=1;_WIN32_WINNT=0x0A00;WINVER=0x0A00;_WIN32=1;WIN32_LEAN_AND_MEAN=1;DEVL=1;__STDC__=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <WarningLevel>Level4</WarningLevel>
       <WarnAsError>false</WarnAsError>
@@ -89,7 +88,7 @@
 
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <PreprocessorDefinitions>_X86_=1;i386=1;STD_CALL;CONDITION_HANDLING=1;NT_UP=1;NT_INST=0;WIN32=100;_NT1X_=100;WINNT=1;_WIN32_WINNT=0x0A00;WINVER=0x0A00;_WIN32=1;WIN32_LEAN_AND_MEAN=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <Optimization>MaxSpeed</Optimization>
       <WarningLevel>Level4</WarningLevel>
       <WarnAsError>false</WarnAsError>

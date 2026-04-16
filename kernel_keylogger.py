@@ -2,11 +2,7 @@
 kernel_keylogger.py — CMD 조회 도구
 =====================================
 
-CMD 에서 바로 실행:
-    kernel_keylogger            # 전체 로그 출력
-    kernel_keylogger --tail 50  # 최근 50개
-    kernel_keylogger --find 바보  # 특정 키 검색
-    kernel_keylogger --stats    # 통계만
+안전한 콘솔 입력 데모가 저장한 DB 를 조회합니다.
 """
 
 from __future__ import annotations
@@ -32,13 +28,13 @@ CYAN   = "\033[96m"
 
 def print_header() -> None:
     print(f"\n{BOLD}{'─'*60}{RESET}")
-    print(f"{BOLD}  KeyLogger DB 조회{RESET}")
+    print(f"{BOLD}  Console Input Demo DB 조회{RESET}")
     print(f"  DB: {store.DB_PATH}")
     print(f"{'─'*60}{RESET}\n")
 
 
 def is_special(key: str) -> bool:
-    return key.startswith("[")
+    return key.startswith("[") or key.startswith("↑")
 
 
 def colorize(key: str) -> str:
@@ -106,7 +102,7 @@ def print_stats(conn) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="kernel_keylogger",
-        description="KeyLogger DB 조회 도구"
+        description="Console Input Demo DB 조회 도구"
     )
     parser.add_argument("--tail",  metavar="N",    type=int, help="최근 N개만 표시")
     parser.add_argument("--find",  metavar="KEY",  type=str, help="특정 키 검색")

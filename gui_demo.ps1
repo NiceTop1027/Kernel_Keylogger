@@ -10,77 +10,6 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using Microsoft.Win32.SafeHandles;
-
-public static class KeyFilterInterop
-{
-    public const UInt32 GENERIC_READ = 0x80000000;
-    public const UInt32 GENERIC_WRITE = 0x40000000;
-    public const UInt32 OPEN_EXISTING = 3;
-    public const UInt32 FILE_DEVICE_UNKNOWN = 0x00000022;
-    public const UInt32 METHOD_BUFFERED = 0;
-    public const UInt32 FILE_READ_DATA = 0x0001;
-    public const UInt32 FILE_WRITE_DATA = 0x0002;
-
-    public static UInt32 CtlCode(UInt32 deviceType, UInt32 function, UInt32 method, UInt32 access)
-    {
-        return (deviceType << 16) | (access << 14) | (function << 2) | method;
-    }
-
-    public static readonly UInt32 IOCTL_KEYFILTER_READ =
-        CtlCode(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_READ_DATA);
-    public static readonly UInt32 IOCTL_KEYFILTER_SUBMIT =
-        CtlCode(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_WRITE_DATA);
-    public static readonly UInt32 IOCTL_KEYFILTER_RESET =
-        CtlCode(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_WRITE_DATA);
-    public static readonly UInt32 IOCTL_KEYFILTER_STATUS =
-        CtlCode(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_READ_DATA);
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public struct KeyRecord
-    {
-        public UInt64 Timestamp100ns;
-        public UInt16 MakeCode;
-        public UInt16 Flags;
-
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
-        public UInt16[] TextUtf16;
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public struct DriverStatus
-    {
-        public UInt32 QueuedCount;
-        public UInt32 Capacity;
-        public UInt32 Flags;
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    public static extern SafeFileHandle CreateFile(
-        string fileName,
-        UInt32 desiredAccess,
-        UInt32 shareMode,
-        IntPtr securityAttributes,
-        UInt32 creationDisposition,
-        UInt32 flagsAndAttributes,
-        IntPtr templateFile);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool DeviceIoControl(
-        SafeFileHandle deviceHandle,
-        UInt32 ioControlCode,
-        IntPtr inBuffer,
-        UInt32 inBufferSize,
-        IntPtr outBuffer,
-        UInt32 outBufferSize,
-        out UInt32 bytesReturned,
-        IntPtr overlapped);
-}
-'@
-
 if ([string]::IsNullOrWhiteSpace($TextLogPath)) {
     $TextLogPath = Join-Path $PSScriptRoot "captured_keys_gui.txt"
 }
@@ -94,7 +23,7 @@ if ([string]::IsNullOrWhiteSpace($PidPath)) {
 }
 
 $ErrorLogPath = Join-Path $PSScriptRoot "gui_demo_error.log"
-$MutexName = "Local\KernelKeyloggerGuiDemo"
+$MutexName = "Local\KeyboardInputGuiDemo"
 $script:CaptureEnabled = $true
 $script:TextLogPath = $TextLogPath
 $script:CsvLogPath = $CsvLogPath
@@ -103,13 +32,6 @@ $script:LogBox = $null
 $script:StatusLabel = $null
 $script:InputBox = $null
 $script:Mutex = $null
-$script:DriverHandle = $null
-$script:DriverReady = $false
-$script:DriverQueue = 0
-$script:DriverCapacity = 0
-$script:LastDriverMessage = "Driver not connected."
-$script:KeyRecordType = [type]"KeyFilterInterop+KeyRecord"
-$script:DriverStatusType = [type]"KeyFilterInterop+DriverStatus"
 
 function Ensure-ParentDirectory {
     param([string]$Path)
@@ -130,376 +52,19 @@ function Escape-CsvValue {
     return '"' + $Value.Replace('"', '""') + '"'
 }
 
-function Get-Win32ErrorMessage {
-    param([int]$Code)
-
-    return (New-Object System.ComponentModel.Win32Exception($Code)).Message
-}
-
-function Close-DriverHandle {
-    if ($null -ne $script:DriverHandle) {
-        try {
-            $script:DriverHandle.Close()
-        }
-        catch {
-        }
-        $script:DriverHandle = $null
-    }
-
-    $script:DriverReady = $false
-    $script:DriverQueue = 0
-    $script:DriverCapacity = 0
-}
-
 function Update-Status {
     if ($null -eq $script:StatusLabel) {
         return
     }
 
-    $captureText = "Capture OFF"
     if ($script:CaptureEnabled) {
-        $captureText = "Capture ON"
-    }
-
-    if ($script:DriverReady) {
-        $script:StatusLabel.Text =
-            "Driver CONNECTED | " + $captureText + " | Queue " +
-            $script:DriverQueue + "/" + $script:DriverCapacity
+        $script:StatusLabel.Text = "Capture: ON"
         $script:StatusLabel.ForeColor = [System.Drawing.Color]::FromArgb(28, 120, 40)
     }
     else {
-        $script:StatusLabel.Text =
-            "Driver DISCONNECTED | " + $captureText + " | " + $script:LastDriverMessage
+        $script:StatusLabel.Text = "Capture: OFF"
         $script:StatusLabel.ForeColor = [System.Drawing.Color]::FromArgb(160, 40, 40)
     }
-}
-
-function Open-DriverHandle {
-    $handle = [KeyFilterInterop]::CreateFile(
-        "\\.\KeyFilter",
-        [KeyFilterInterop]::GENERIC_READ -bor [KeyFilterInterop]::GENERIC_WRITE,
-        0,
-        [IntPtr]::Zero,
-        [KeyFilterInterop]::OPEN_EXISTING,
-        0,
-        [IntPtr]::Zero
-    )
-
-    if ($handle.IsInvalid) {
-        $code = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        $message = Get-Win32ErrorMessage -Code $code
-        if ($code -eq 2) {
-            $script:LastDriverMessage =
-                "Driver not loaded. Run 'setup.bat driver' as Administrator, then retry."
-        }
-        elseif ($code -eq 5) {
-            $script:LastDriverMessage =
-                "Access denied. Start the driver setup from an elevated Administrator shell."
-        }
-        else {
-            $script:LastDriverMessage = "Open failed: " + $message
-        }
-        return $null
-    }
-
-    $script:LastDriverMessage = "Connected."
-    return $handle
-}
-
-function Invoke-DriverReset {
-    if ($null -eq $script:DriverHandle) {
-        return $false
-    }
-
-    [uint32]$bytesReturned = 0
-    $ok = [KeyFilterInterop]::DeviceIoControl(
-        $script:DriverHandle,
-        [KeyFilterInterop]::IOCTL_KEYFILTER_RESET,
-        [IntPtr]::Zero,
-        0,
-        [IntPtr]::Zero,
-        0,
-        [ref]$bytesReturned,
-        [IntPtr]::Zero
-    )
-
-    if (-not $ok) {
-        $code = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        $script:LastDriverMessage = "Reset failed: " + (Get-Win32ErrorMessage -Code $code)
-    }
-
-    return $ok
-}
-
-function Get-DriverStatusInfo {
-    if ($null -eq $script:DriverHandle) {
-        return $null
-    }
-
-    $size = [System.Runtime.InteropServices.Marshal]::SizeOf($script:DriverStatusType)
-    $buffer = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($size)
-
-    try {
-        [uint32]$bytesReturned = 0
-        $ok = [KeyFilterInterop]::DeviceIoControl(
-            $script:DriverHandle,
-            [KeyFilterInterop]::IOCTL_KEYFILTER_STATUS,
-            [IntPtr]::Zero,
-            0,
-            $buffer,
-            [uint32]$size,
-            [ref]$bytesReturned,
-            [IntPtr]::Zero
-        )
-
-        if (-not $ok) {
-            $code = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-            $script:LastDriverMessage = "Status failed: " + (Get-Win32ErrorMessage -Code $code)
-            return $null
-        }
-
-        return [System.Runtime.InteropServices.Marshal]::PtrToStructure(
-            $buffer,
-            $script:DriverStatusType
-        )
-    }
-    finally {
-        [System.Runtime.InteropServices.Marshal]::FreeHGlobal($buffer)
-    }
-}
-
-function Ensure-DriverConnection {
-    if ($null -ne $script:DriverHandle -and -not $script:DriverHandle.IsInvalid) {
-        return $true
-    }
-
-    Close-DriverHandle
-    $handle = Open-DriverHandle
-    if ($null -eq $handle) {
-        $script:DriverReady = $false
-        Update-Status
-        return $false
-    }
-
-    $script:DriverHandle = $handle
-    $script:DriverReady = $true
-    $null = Get-DriverStatusInfo
-    Update-Status
-    return $true
-}
-
-function Convert-TextToUtf16Units {
-    param([string]$Text)
-
-    $units = New-Object "System.UInt16[]" 16
-    $bytes = [System.Text.Encoding]::Unicode.GetBytes($Text)
-    $count = [Math]::Min(16, [int]($bytes.Length / 2))
-
-    for ($i = 0; $i -lt $count; $i++) {
-        $units[$i] = [BitConverter]::ToUInt16($bytes, $i * 2)
-    }
-
-    return $units
-}
-
-function New-DriverRecord {
-    param(
-        [string]$Display,
-        [uint16]$MakeCode,
-        [uint16]$Flags
-    )
-
-    $record = [Activator]::CreateInstance($script:KeyRecordType)
-    $record.Timestamp100ns = [UInt64]0
-    $record.MakeCode = $MakeCode
-    $record.Flags = $Flags
-    $record.TextUtf16 = Convert-TextToUtf16Units -Text $Display
-    return $record
-}
-
-function Convert-DriverRecordToText {
-    param($Record)
-
-    $chars = New-Object System.Collections.Generic.List[char]
-    foreach ($unit in $Record.TextUtf16) {
-        if ($unit -eq 0) {
-            break
-        }
-        $chars.Add([char]$unit)
-    }
-
-    return -join $chars.ToArray()
-}
-
-function Append-UiLog {
-    param(
-        [string]$Timestamp,
-        [string]$Display
-    )
-
-    $line = $Timestamp + "  " + $Display
-
-    if ($null -ne $script:LogBox) {
-        $script:LogBox.AppendText($line + [Environment]::NewLine)
-        $script:LogBox.SelectionStart = $script:LogBox.TextLength
-        $script:LogBox.ScrollToCaret()
-    }
-
-    Add-Content -LiteralPath $script:TextLogPath -Encoding UTF8 -Value $line
-}
-
-function Drain-DriverLog {
-    if ($null -eq $script:DriverHandle) {
-        return
-    }
-
-    $recordSize = [System.Runtime.InteropServices.Marshal]::SizeOf($script:KeyRecordType)
-    $bufferSize = $recordSize * 64
-    $buffer = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bufferSize)
-
-    try {
-        while ($true) {
-            [uint32]$bytesReturned = 0
-            $ok = [KeyFilterInterop]::DeviceIoControl(
-                $script:DriverHandle,
-                [KeyFilterInterop]::IOCTL_KEYFILTER_READ,
-                [IntPtr]::Zero,
-                0,
-                $buffer,
-                [uint32]$bufferSize,
-                [ref]$bytesReturned,
-                [IntPtr]::Zero
-            )
-
-            if (-not $ok) {
-                $code = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-                $script:LastDriverMessage = "Read failed: " + (Get-Win32ErrorMessage -Code $code)
-                Close-DriverHandle
-                Update-Status
-                return
-            }
-
-            $count = [int]($bytesReturned / $recordSize)
-            if ($count -le 0) {
-                break
-            }
-
-            for ($i = 0; $i -lt $count; $i++) {
-                $itemPtr = [IntPtr]($buffer.ToInt64() + ($i * $recordSize))
-                $record = [System.Runtime.InteropServices.Marshal]::PtrToStructure(
-                    $itemPtr,
-                    $script:KeyRecordType
-                )
-                $display = Convert-DriverRecordToText -Record $record
-                if ([string]::IsNullOrWhiteSpace($display)) {
-                    continue
-                }
-
-                $dt = [DateTime]::FromFileTimeUtc([Int64]$record.Timestamp100ns).ToLocalTime()
-                $timestamp = $dt.ToString("yyyy-MM-dd HH:mm:ss.fff")
-                Append-UiLog -Timestamp $timestamp -Display $display
-
-                $kind = "text"
-                if ($display.StartsWith("[")) {
-                    $kind = "special"
-                }
-
-                $csvLine = @(
-                    (Escape-CsvValue $timestamp)
-                    (Escape-CsvValue $display)
-                    (Escape-CsvValue $kind)
-                    (Escape-CsvValue $record.MakeCode.ToString())
-                    (Escape-CsvValue $record.Flags.ToString())
-                ) -join ","
-                Add-Content -LiteralPath $script:CsvLogPath -Encoding UTF8 -Value $csvLine
-            }
-        }
-    }
-    finally {
-        [System.Runtime.InteropServices.Marshal]::FreeHGlobal($buffer)
-    }
-}
-
-function Refresh-DriverState {
-    if (-not (Ensure-DriverConnection)) {
-        return
-    }
-
-    $status = Get-DriverStatusInfo
-    if ($null -eq $status) {
-        Close-DriverHandle
-        Update-Status
-        return
-    }
-
-    $script:DriverReady = $true
-    $script:DriverQueue = [int]$status.QueuedCount
-    $script:DriverCapacity = [int]$status.Capacity
-
-    if ($script:DriverQueue -gt 0) {
-        Drain-DriverLog
-        $status = Get-DriverStatusInfo
-        if ($null -ne $status) {
-            $script:DriverQueue = [int]$status.QueuedCount
-            $script:DriverCapacity = [int]$status.Capacity
-        }
-    }
-
-    Update-Status
-}
-
-function Submit-DriverEvent {
-    param(
-        [string]$Display,
-        [uint16]$MakeCode,
-        [uint16]$Flags
-    )
-
-    if (-not $script:CaptureEnabled) {
-        return
-    }
-
-    if (-not (Ensure-DriverConnection)) {
-        return
-    }
-
-    $record = New-DriverRecord -Display $Display -MakeCode $MakeCode -Flags $Flags
-    $size = [System.Runtime.InteropServices.Marshal]::SizeOf($script:KeyRecordType)
-    $buffer = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($size)
-    $recordWritten = $false
-
-    try {
-        [System.Runtime.InteropServices.Marshal]::StructureToPtr($record, $buffer, $false)
-        $recordWritten = $true
-        [uint32]$bytesReturned = 0
-        $ok = [KeyFilterInterop]::DeviceIoControl(
-            $script:DriverHandle,
-            [KeyFilterInterop]::IOCTL_KEYFILTER_SUBMIT,
-            $buffer,
-            [uint32]$size,
-            [IntPtr]::Zero,
-            0,
-            [ref]$bytesReturned,
-            [IntPtr]::Zero
-        )
-
-        if (-not $ok) {
-            $code = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-            $script:LastDriverMessage = "Submit failed: " + (Get-Win32ErrorMessage -Code $code)
-            Close-DriverHandle
-            Update-Status
-            return
-        }
-    }
-    finally {
-        if ($recordWritten) {
-            [System.Runtime.InteropServices.Marshal]::DestroyStructure($buffer, $script:KeyRecordType)
-        }
-        [System.Runtime.InteropServices.Marshal]::FreeHGlobal($buffer)
-    }
-
-    Drain-DriverLog
-    Refresh-DriverState
 }
 
 function Get-ModifierText {
@@ -515,6 +80,39 @@ function Get-ModifierText {
     }
 
     return ($mods -join "+")
+}
+
+function Append-Log {
+    param(
+        [string]$Display,
+        [string]$Kind,
+        [string]$KeyName,
+        [string]$Modifiers
+    )
+
+    if (-not $script:CaptureEnabled) {
+        return
+    }
+
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
+    $line = $timestamp + "  " + $Display
+
+    if ($null -ne $script:LogBox) {
+        $script:LogBox.AppendText($line + [Environment]::NewLine)
+        $script:LogBox.SelectionStart = $script:LogBox.TextLength
+        $script:LogBox.ScrollToCaret()
+    }
+
+    Add-Content -LiteralPath $script:TextLogPath -Encoding UTF8 -Value $line
+
+    $csvLine = @(
+        (Escape-CsvValue $timestamp)
+        (Escape-CsvValue $Display)
+        (Escape-CsvValue $Kind)
+        (Escape-CsvValue $KeyName)
+        (Escape-CsvValue $Modifiers)
+    ) -join ","
+    Add-Content -LiteralPath $script:CsvLogPath -Encoding UTF8 -Value $csvLine
 }
 
 function Get-SpecialDisplay {
@@ -556,7 +154,7 @@ function Show-Error {
 
     [System.Windows.Forms.MessageBox]::Show(
         $Message + [Environment]::NewLine + "Error log: " + $ErrorLogPath,
-        "Kernel Keylogger GUI Demo",
+        "Keyboard Input GUI Demo",
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Error
     ) | Out-Null
@@ -568,7 +166,7 @@ try {
     Ensure-ParentDirectory -Path $script:PidPath
 
     if (-not (Test-Path -LiteralPath $script:CsvLogPath)) {
-        Set-Content -LiteralPath $script:CsvLogPath -Encoding UTF8 -Value '"timestamp","display","kind","makeCode","flags"'
+        Set-Content -LiteralPath $script:CsvLogPath -Encoding UTF8 -Value '"timestamp","display","kind","key","modifiers"'
     }
 
     $createdNew = $false
@@ -576,7 +174,7 @@ try {
     if (-not $createdNew) {
         [System.Windows.Forms.MessageBox]::Show(
             "The GUI demo is already running.",
-            "Kernel Keylogger GUI Demo",
+            "Keyboard Input GUI Demo",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
         ) | Out-Null
@@ -586,7 +184,7 @@ try {
     Set-Content -LiteralPath $script:PidPath -Encoding ASCII -Value $PID
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = "Kernel Keylogger GUI Demo"
+    $form.Text = "Keyboard Input GUI Demo"
     $form.StartPosition = "CenterScreen"
     $form.Size = New-Object System.Drawing.Size(980, 760)
     $form.MinimumSize = New-Object System.Drawing.Size(900, 680)
@@ -594,14 +192,14 @@ try {
     $form.KeyPreview = $true
 
     $title = New-Object System.Windows.Forms.Label
-    $title.Text = "Kernel Keylogger GUI Demo"
+    $title.Text = "Keyboard Input GUI Demo"
     $title.Font = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Bold)
     $title.Location = New-Object System.Drawing.Point(24, 18)
     $title.AutoSize = $true
     $form.Controls.Add($title)
 
     $notice = New-Object System.Windows.Forms.Label
-    $notice.Text = "Kernel-backed safe mode: only input inside this window is submitted to the driver."
+    $notice.Text = "User-mode safe mode: captures input only inside this window. No WDK or driver install required."
     $notice.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
     $notice.Location = New-Object System.Drawing.Point(28, 58)
     $notice.Size = New-Object System.Drawing.Size(900, 22)
@@ -617,7 +215,7 @@ try {
     $script:StatusLabel = New-Object System.Windows.Forms.Label
     $script:StatusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
     $script:StatusLabel.Location = New-Object System.Drawing.Point(88, 94)
-    $script:StatusLabel.Size = New-Object System.Drawing.Size(620, 40)
+    $script:StatusLabel.AutoSize = $true
     $form.Controls.Add($script:StatusLabel)
 
     $startButton = New-Object System.Windows.Forms.Button
@@ -653,7 +251,7 @@ try {
     $form.Controls.Add($inputLabel)
 
     $inputHint = New-Object System.Windows.Forms.Label
-    $inputHint.Text = "Click here and type. This is the only input scope that gets sent to the driver."
+    $inputHint.Text = "Click here and type. Only keystrokes entered in this box are logged."
     $inputHint.Location = New-Object System.Drawing.Point(28, 156)
     $inputHint.Size = New-Object System.Drawing.Size(760, 20)
     $form.Controls.Add($inputHint)
@@ -669,7 +267,7 @@ try {
     $form.Controls.Add($script:InputBox)
 
     $logLabel = New-Object System.Windows.Forms.Label
-    $logLabel.Text = "Driver Log"
+    $logLabel.Text = "Captured Log"
     $logLabel.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
     $logLabel.Location = New-Object System.Drawing.Point(28, 414)
     $logLabel.AutoSize = $true
@@ -690,31 +288,23 @@ try {
     $script:LogBox.Size = New-Object System.Drawing.Size(882, 214)
     $form.Controls.Add($script:LogBox)
 
-    $driverTimer = New-Object System.Windows.Forms.Timer
-    $driverTimer.Interval = 900
-    $driverTimer.Add_Tick({
-        Refresh-DriverState
-    })
+    Update-Status
 
     $startButton.Add_Click({
         $script:CaptureEnabled = $true
-        Refresh-DriverState
+        Update-Status
         $script:InputBox.Focus()
     })
 
     $stopButton.Add_Click({
         $script:CaptureEnabled = $false
-        Refresh-DriverState
+        Update-Status
         $script:InputBox.Focus()
     })
 
     $clearButton.Add_Click({
         $script:InputBox.Clear()
         $script:LogBox.Clear()
-        if (Ensure-DriverConnection) {
-            $null = Invoke-DriverReset
-            Refresh-DriverState
-        }
         $script:InputBox.Focus()
     })
 
@@ -734,7 +324,7 @@ try {
             return
         }
 
-        Submit-DriverEvent -Display ([string]$eventArgs.KeyChar) -MakeCode ([uint16]$code) -Flags ([uint16]0x0400)
+        Append-Log -Display ([string]$eventArgs.KeyChar) -Kind "text" -KeyName "Char" -Modifiers ""
     })
 
     $script:InputBox.Add_KeyDown({
@@ -749,28 +339,17 @@ try {
             return
         }
 
-        $flags = [uint16]0x0400
-        Submit-DriverEvent -Display $display -MakeCode ([uint16]$eventArgs.KeyValue) -Flags $flags
+        Append-Log -Display $display -Kind "special" -KeyName $eventArgs.KeyCode.ToString() -Modifiers (Get-ModifierText -EventArgs $eventArgs)
     })
 
     $form.Add_Shown({
-        if (Ensure-DriverConnection) {
-            $null = Invoke-DriverReset
-            Drain-DriverLog
-        }
-        Refresh-DriverState
-        $driverTimer.Start()
         $script:InputBox.Focus()
     })
 
     $form.Add_FormClosed({
-        $driverTimer.Stop()
-
         if (Test-Path -LiteralPath $script:PidPath) {
             Remove-Item -LiteralPath $script:PidPath -Force -ErrorAction SilentlyContinue
         }
-
-        Close-DriverHandle
 
         if ($null -ne $script:Mutex) {
             $script:Mutex.ReleaseMutex() | Out-Null
@@ -778,7 +357,6 @@ try {
         }
     })
 
-    Update-Status
     [System.Windows.Forms.Application]::Run($form)
     exit 0
 }

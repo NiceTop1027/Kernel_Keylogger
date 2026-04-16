@@ -110,10 +110,10 @@ try {
     }
 
     $notice = @(
-        "Portable console input.",
-        "Scope: current console window only.",
-        "No system-wide capture, no background capture, no credential capture.",
-        "Press Esc to exit."
+        "윤리적 책임: 이 프로그램은 현재 콘솔 창에서만 입력을 기록합니다.",
+        "본인 소유 장치 또는 명시적 동의를 받은 환경에서만 사용하십시오.",
+        "무단 복제, 무단 배포, 무단 수집을 금지합니다.",
+        "종료하려면 Esc 를 누르십시오."
     )
 
     foreach ($line in $notice) {
@@ -123,8 +123,8 @@ try {
     Write-Host "Portable Console Input"
     Write-Host ("TXT log : " + $TextLogPath)
     Write-Host ("CSV log : " + $CsvLogPath)
-    Write-Host "Scope   : current console window only"
-    Write-Host "Exit key: Esc"
+    Write-Host "범위    : 현재 콘솔 창만"
+    Write-Host "종료 키 : Esc"
     Write-Host ("-" * 55)
 
     while ($true) {

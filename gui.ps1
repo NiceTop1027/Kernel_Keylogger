@@ -199,22 +199,22 @@ try {
     $form.Controls.Add($title)
 
     $notice = New-Object System.Windows.Forms.Label
-    $notice.Text = "User-mode safe mode: captures input only inside this window. No WDK or driver install required."
+    $notice.Text = "윤리적 책임: 이 프로그램은 본인 소유 장치 또는 명시적 동의를 받은 환경에서만 사용하십시오.`r`n무단 복제, 무단 배포, 무단 수집을 금지하며 입력은 이 창 내부에서만 기록됩니다."
     $notice.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Regular)
     $notice.Location = New-Object System.Drawing.Point(28, 58)
-    $notice.Size = New-Object System.Drawing.Size(900, 22)
+    $notice.Size = New-Object System.Drawing.Size(900, 36)
     $form.Controls.Add($notice)
 
     $statusCaption = New-Object System.Windows.Forms.Label
     $statusCaption.Text = "Status"
     $statusCaption.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    $statusCaption.Location = New-Object System.Drawing.Point(28, 94)
+    $statusCaption.Location = New-Object System.Drawing.Point(28, 104)
     $statusCaption.AutoSize = $true
     $form.Controls.Add($statusCaption)
 
     $script:StatusLabel = New-Object System.Windows.Forms.Label
     $script:StatusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    $script:StatusLabel.Location = New-Object System.Drawing.Point(88, 94)
+    $script:StatusLabel.Location = New-Object System.Drawing.Point(88, 104)
     $script:StatusLabel.AutoSize = $true
     $form.Controls.Add($script:StatusLabel)
 

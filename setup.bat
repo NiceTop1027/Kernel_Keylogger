@@ -368,9 +368,9 @@ echo      sc delete KeyFilter
 echo  =========================================
 echo.
 
-set /p GORUN="지금 바로 reader.py 실행? [Y/N]: "
+set /p GORUN="지금 바로 GUI 데모 실행? [Y/N]: "
 if /i "!GORUN!"=="Y" (
-    start "KeyFilter Console Demo" cmd /k "cd /d %ROOT% && python reader\reader.py"
+    call "%ROOT%gui_demo.bat"
 )
 pause
 goto :eof

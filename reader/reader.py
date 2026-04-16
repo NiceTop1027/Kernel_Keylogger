@@ -48,6 +48,7 @@ VK_ESCAPE = 0x1B
 
 KEY_FLAG_BREAK = 0x0001
 KEY_FLAG_EXTENDED = 0x0002
+KEY_FLAG_CONSOLE_SCOPE = 0x0200
 KEY_TEXT_LEN = 16
 RECORDS_PER_READ = 64
 WINDOWS_EPOCH_DIFF_SEC = 11644473600
@@ -396,7 +397,9 @@ def build_record(key_event: KEY_EVENT_RECORD, text: str, is_break: bool) -> KEY_
     record = KEY_RECORD()
     units = utf16_units_from_text(text)
     record.MakeCode = key_event.wVirtualScanCode
-    record.Flags = KEY_FLAG_BREAK if is_break else 0
+    record.Flags = KEY_FLAG_CONSOLE_SCOPE
+    if is_break:
+        record.Flags |= KEY_FLAG_BREAK
     if key_event.dwControlKeyState & ENHANCED_KEY:
         record.Flags |= KEY_FLAG_EXTENDED
     for index, unit in enumerate(units):

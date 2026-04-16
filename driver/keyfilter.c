@@ -2,8 +2,8 @@
  * keyfilter.c — 안전한 커널 입력 데모 드라이버
  *
  * 이 드라이버는 키보드 클래스 스택에 붙지 않습니다.
- * 유저 모드 콘솔 데모가 현재 창에서 읽은 이벤트를 IOCTL 로 제출하면,
- * 드라이버가 커널 링 버퍼에 적재하고 다시 읽어 갈 수 있게 해 줍니다.
+ * 유저 모드 데모가 현재 앱 창에서 읽은 입력 이벤트를 IOCTL 로 제출하면,
+ * 드라이버가 커널 링 버퍼에 적재하고 상태/로그를 다시 읽어 갈 수 있게 해 줍니다.
  */
 
 #include <ntddk.h>
@@ -52,6 +52,15 @@ PushRecordLocked(
     Ext->LogTail = nextTail;
 }
 
+static ULONG
+GetQueuedCountLocked(_In_ const PDEVICE_EXTENSION Ext)
+{
+    if (Ext->LogTail >= Ext->LogHead)
+        return Ext->LogTail - Ext->LogHead;
+
+    return LOG_CAPACITY - (Ext->LogHead - Ext->LogTail);
+}
+
 static VOID
 ResetBufferLocked(_Inout_ PDEVICE_EXTENSION Ext)
 {
@@ -77,7 +86,7 @@ QueueSubmittedRecords(
 
         RtlZeroMemory(&record, sizeof(record));
         record.MakeCode = Input[i].MakeCode;
-        record.Flags = (USHORT)(Input[i].Flags | KEY_FLAG_SYNTHETIC | KEY_FLAG_CONSOLE_SCOPE);
+        record.Flags = (USHORT)(Input[i].Flags | KEY_FLAG_SYNTHETIC);
         RtlCopyMemory(record.TextUtf16, Input[i].TextUtf16, sizeof(record.TextUtf16));
         record.TextUtf16[KEY_TEXT_LEN - 1] = 0;
 
@@ -178,6 +187,28 @@ DispatchControl(
         KeAcquireSpinLock(&ext->LogLock, &oldIrql);
         ResetBufferLocked(ext);
         KeReleaseSpinLock(&ext->LogLock, oldIrql);
+        break;
+    }
+
+    case IOCTL_KEYFILTER_STATUS:
+    {
+        PKEYFILTER_STATUS outStatus;
+        KIRQL oldIrql;
+
+        if (outLen < sizeof(KEYFILTER_STATUS)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+
+        outStatus = (PKEYFILTER_STATUS)Irp->AssociatedIrp.SystemBuffer;
+
+        KeAcquireSpinLock(&ext->LogLock, &oldIrql);
+        outStatus->QueuedCount = GetQueuedCountLocked(ext);
+        outStatus->Capacity = LOG_CAPACITY - 1;
+        outStatus->Flags = KEYFILTER_STATUS_READY;
+        KeReleaseSpinLock(&ext->LogLock, oldIrql);
+
+        info = sizeof(KEYFILTER_STATUS);
         break;
     }
 

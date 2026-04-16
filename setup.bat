@@ -10,10 +10,22 @@ set SERVICE=KeyFilter
 set CERT_NAME=KeyFilterTestCert
 set REG_KEY=HKLM\SOFTWARE\KernelInputDemoSetup
 
+if /i "%~1"=="portable" (
+    call "%ROOT%portable_demo.bat"
+    exit /b %errorlevel%
+)
+
 echo.
 echo  =========================================
 echo    Kernel Input Demo 설치 스크립트
 echo  =========================================
+echo.
+echo    설치 없이 바로 실행:
+echo      portable_demo.bat
+echo      setup.bat portable
+echo.
+echo    커널 드라이버 설치:
+echo      setup.bat
 echo.
 
 :: ────────────────────────────────────────────────────────────────
@@ -23,6 +35,7 @@ call :step 0 8 "관리자 권한 확인"
 net session >nul 2>&1
 if errorlevel 1 (
     call :fail "관리자 권한 없음 -- 우클릭 후 '관리자로 실행'"
+    echo   설치 없이 바로 실행하려면: portable_demo.bat
     pause & exit /b 1
 )
 call :ok
@@ -37,7 +50,7 @@ if not errorlevel 1 (
 ) else (
     bcdedit /set testsigning on >nul 2>&1
     if errorlevel 1 (
-        call :fail "활성화 실패 -- VM 설정에서 Secure Boot 를 꺼주세요"
+        call :fail "활성화 실패 -- Secure Boot 를 끄지 않으려면 portable_demo.bat 를 사용하세요"
         pause & exit /b 1
     )
     call :ok "활성화 완료 -- 5초 후 재부팅, 재부팅 후 자동 재실행"
@@ -317,6 +330,9 @@ echo.
 echo  =========================================
 echo    설치 완료!
 echo  -----------------------------------------
+echo    설치 없이 바로 실행:
+echo      portable_demo.bat
+echo.
 echo    콘솔 데모 실행:
 echo      python reader\reader.py
 echo.

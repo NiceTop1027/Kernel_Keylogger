@@ -10,11 +10,18 @@ set SERVICE=KeyFilter
 set CERT_NAME=KeyFilterTestCert
 set REG_KEY=HKLM\SOFTWARE\KernelInputDemoSetup
 
+if /i "%~1"=="driver" goto :driver_install
+if /i "%~1"=="install" goto :driver_install
 if /i "%~1"=="portable" (
-    call "%ROOT%portable_demo.bat"
+    shift
+    call "%ROOT%portable_demo.bat" %*
     exit /b %errorlevel%
 )
 
+call "%ROOT%portable_demo.bat" %*
+exit /b %errorlevel%
+
+:driver_install
 echo.
 echo  =========================================
 echo    Kernel Input Demo 설치 스크립트
@@ -25,7 +32,7 @@ echo      portable_demo.bat
 echo      setup.bat portable
 echo.
 echo    커널 드라이버 설치:
-echo      setup.bat
+echo      setup.bat driver
 echo.
 
 :: ────────────────────────────────────────────────────────────────

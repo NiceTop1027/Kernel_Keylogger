@@ -1,12 +1,20 @@
 param(
-    [string]$TextLogPath = (Join-Path $PSScriptRoot "captured_keys_portable.txt"),
-    [string]$CsvLogPath = (Join-Path $PSScriptRoot "captured_keys_portable.csv"),
+    [string]$TextLogPath = "",
+    [string]$CsvLogPath = "",
     [switch]$Accept
 )
 
 $ErrorActionPreference = "Stop"
 
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+if ([string]::IsNullOrWhiteSpace($TextLogPath)) {
+    $TextLogPath = Join-Path $PSScriptRoot "captured_keys_portable.txt"
+}
+
+if ([string]::IsNullOrWhiteSpace($CsvLogPath)) {
+    $CsvLogPath = Join-Path $PSScriptRoot "captured_keys_portable.csv"
+}
+
+$ErrorLogPath = Join-Path $PSScriptRoot "portable_demo_error.log"
 
 function Ensure-ParentDirectory {
     param([string]$Path)
@@ -20,8 +28,11 @@ function Ensure-ParentDirectory {
 function Escape-CsvValue {
     param([string]$Value)
 
-    $escaped = $Value.Replace('"', '""')
-    return '"' + $escaped + '"'
+    if ($null -eq $Value) {
+        $Value = ""
+    }
+
+    return '"' + $Value.Replace('"', '""') + '"'
 }
 
 function Get-KeyDisplay {
@@ -29,37 +40,33 @@ function Get-KeyDisplay {
 
     $codePoint = [int][char]$KeyInfo.KeyChar
     if ($codePoint -ne 0) {
-        switch ($KeyInfo.KeyChar) {
-            "`r" { return "[Enter]" }
-            "`t" { return "[Tab]" }
-            "`b" { return "[Backspace]" }
-            default {
-                if ($codePoint -lt 32) {
-                    return "[Ctrl+$([char]($codePoint + 64))]"
-                }
-                return [string]$KeyInfo.KeyChar
-            }
+        if ($KeyInfo.KeyChar -eq [char]13) { return "[Enter]" }
+        if ($KeyInfo.KeyChar -eq [char]9) { return "[Tab]" }
+        if ($KeyInfo.KeyChar -eq [char]8) { return "[Backspace]" }
+        if ($codePoint -lt 32) {
+            return "[Ctrl+" + [char]($codePoint + 64) + "]"
         }
+        return [string]$KeyInfo.KeyChar
     }
 
-    switch ($KeyInfo.Key) {
-        ([ConsoleKey]::Escape) { return "[Esc]" }
-        ([ConsoleKey]::Backspace) { return "[Backspace]" }
-        ([ConsoleKey]::Enter) { return "[Enter]" }
-        ([ConsoleKey]::Tab) { return "[Tab]" }
-        ([ConsoleKey]::Spacebar) { return " " }
-        ([ConsoleKey]::Delete) { return "[Delete]" }
-        ([ConsoleKey]::Insert) { return "[Insert]" }
-        ([ConsoleKey]::Home) { return "[Home]" }
-        ([ConsoleKey]::End) { return "[End]" }
-        ([ConsoleKey]::PageUp) { return "[PageUp]" }
-        ([ConsoleKey]::PageDown) { return "[PageDown]" }
-        ([ConsoleKey]::UpArrow) { return "[Up]" }
-        ([ConsoleKey]::DownArrow) { return "[Down]" }
-        ([ConsoleKey]::LeftArrow) { return "[Left]" }
-        ([ConsoleKey]::RightArrow) { return "[Right]" }
-        default { return "[{0}]" -f $KeyInfo.Key }
-    }
+    $key = $KeyInfo.Key
+    if ($key -eq [ConsoleKey]::Escape) { return "[Esc]" }
+    if ($key -eq [ConsoleKey]::Backspace) { return "[Backspace]" }
+    if ($key -eq [ConsoleKey]::Enter) { return "[Enter]" }
+    if ($key -eq [ConsoleKey]::Tab) { return "[Tab]" }
+    if ($key -eq [ConsoleKey]::Spacebar) { return " " }
+    if ($key -eq [ConsoleKey]::Delete) { return "[Delete]" }
+    if ($key -eq [ConsoleKey]::Insert) { return "[Insert]" }
+    if ($key -eq [ConsoleKey]::Home) { return "[Home]" }
+    if ($key -eq [ConsoleKey]::End) { return "[End]" }
+    if ($key -eq [ConsoleKey]::PageUp) { return "[PageUp]" }
+    if ($key -eq [ConsoleKey]::PageDown) { return "[PageDown]" }
+    if ($key -eq [ConsoleKey]::UpArrow) { return "[Up]" }
+    if ($key -eq [ConsoleKey]::DownArrow) { return "[Down]" }
+    if ($key -eq [ConsoleKey]::LeftArrow) { return "[Left]" }
+    if ($key -eq [ConsoleKey]::RightArrow) { return "[Right]" }
+
+    return "[" + $KeyInfo.Key.ToString() + "]"
 }
 
 function Get-ModifierText {
@@ -83,67 +90,94 @@ function Write-KeyLine {
         [string]$Display
     )
 
-    $color = if ($Display.StartsWith("[") -or $Display.StartsWith("↑")) {
-        "Yellow"
-    } else {
-        "Green"
+    $color = "Green"
+    if ($Display.StartsWith("[")) {
+        $color = "Yellow"
     }
 
     Write-Host $Timestamp -NoNewline -ForegroundColor DarkGray
     Write-Host ("  " + $Display) -ForegroundColor $color
 }
 
-Ensure-ParentDirectory -Path $TextLogPath
-Ensure-ParentDirectory -Path $CsvLogPath
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-if (-not (Test-Path -LiteralPath $CsvLogPath)) {
-    Set-Content -LiteralPath $CsvLogPath -Encoding UTF8 -Value '"timestamp","display","kind","consoleKey","modifiers"'
-}
+    Ensure-ParentDirectory -Path $TextLogPath
+    Ensure-ParentDirectory -Path $CsvLogPath
 
-$notice = @"
-이 프로그램은 설치 없이 바로 실행되는 안전한 포터블 데모입니다.
-입력 범위는 현재 콘솔 창으로 제한되며, 시스템 전역 입력이나 백그라운드 앱 입력은 읽지 않습니다.
-윤리적 책임과 무단 복제/무단 수집 금지 원칙을 이해한 뒤에만 사용하십시오.
-"@
-
-Write-Host $notice
-
-if (-not $Accept) {
-    $answer = Read-Host "계속하려면 YES 를 입력하세요"
-    if ($answer.ToUpperInvariant() -ne "YES") {
-        throw "동의하지 않아 종료합니다."
+    if (-not (Test-Path -LiteralPath $CsvLogPath)) {
+        Set-Content -LiteralPath $CsvLogPath -Encoding UTF8 -Value '"timestamp","display","kind","consoleKey","modifiers"'
     }
-}
 
-Write-Host "Portable Console Demo"
-Write-Host ("TXT 저장  : " + $TextLogPath)
-Write-Host ("CSV 저장  : " + $CsvLogPath)
-Write-Host "입력 범위 : 현재 콘솔 창만"
-Write-Host "종료 키   : Esc"
-Write-Host ("-" * 55)
+    $notice = @(
+        "Portable console demo.",
+        "Scope: current console window only.",
+        "No system-wide capture, no background capture, no credential capture.",
+        "Press Esc to exit."
+    )
 
-while ($true) {
-    $keyInfo = [Console]::ReadKey($true)
-    $display = Get-KeyDisplay -KeyInfo $keyInfo
-    $timestamp = Get-Date -Format "HH:mm:ss.fff"
-    $kind = if ($display.StartsWith("[")) { "special" } else { "text" }
-    $modifiers = Get-ModifierText -KeyInfo $keyInfo
-
-    Write-KeyLine -Timestamp $timestamp -Display $display
-    Add-Content -LiteralPath $TextLogPath -Encoding UTF8 -Value ($timestamp + "  " + $display)
-
-    $csvLine = @(
-        (Escape-CsvValue $timestamp)
-        (Escape-CsvValue $display)
-        (Escape-CsvValue $kind)
-        (Escape-CsvValue $keyInfo.Key.ToString())
-        (Escape-CsvValue $modifiers)
-    ) -join ","
-    Add-Content -LiteralPath $CsvLogPath -Encoding UTF8 -Value $csvLine
-
-    if ($keyInfo.Key -eq [ConsoleKey]::Escape) {
-        Write-Host ""
-        Write-Host "[종료] Esc 입력"
-        break
+    foreach ($line in $notice) {
+        Write-Host $line
     }
+
+    if (-not $Accept) {
+        $answer = Read-Host "Type YES to continue"
+        if (($answer + "").Trim().ToUpper() -ne "YES") {
+            throw "Cancelled by user."
+        }
+    }
+
+    Write-Host "Portable Console Demo"
+    Write-Host ("TXT log : " + $TextLogPath)
+    Write-Host ("CSV log : " + $CsvLogPath)
+    Write-Host "Scope   : current console window only"
+    Write-Host "Exit key: Esc"
+    Write-Host ("-" * 55)
+
+    while ($true) {
+        $keyInfo = [Console]::ReadKey($true)
+        $display = Get-KeyDisplay -KeyInfo $keyInfo
+        $timestamp = Get-Date -Format "HH:mm:ss.fff"
+        $kind = "text"
+        if ($display.StartsWith("[")) {
+            $kind = "special"
+        }
+        $modifiers = Get-ModifierText -KeyInfo $keyInfo
+
+        Write-KeyLine -Timestamp $timestamp -Display $display
+        Add-Content -LiteralPath $TextLogPath -Encoding UTF8 -Value ($timestamp + "  " + $display)
+
+        $csvLine = @(
+            (Escape-CsvValue $timestamp)
+            (Escape-CsvValue $display)
+            (Escape-CsvValue $kind)
+            (Escape-CsvValue $keyInfo.Key.ToString())
+            (Escape-CsvValue $modifiers)
+        ) -join ","
+        Add-Content -LiteralPath $CsvLogPath -Encoding UTF8 -Value $csvLine
+
+        if ($keyInfo.Key -eq [ConsoleKey]::Escape) {
+            Write-Host ""
+            Write-Host "[EXIT] Esc"
+            break
+        }
+    }
+
+    exit 0
+}
+catch {
+    $lines = @()
+    $lines += "=== portable demo error ==="
+    $lines += ("time=" + (Get-Date -Format "o"))
+    $lines += ("message=" + $_.Exception.Message)
+    if ($_.ScriptStackTrace) {
+        $lines += "stack="
+        $lines += $_.ScriptStackTrace
+    }
+    Set-Content -LiteralPath $ErrorLogPath -Encoding UTF8 -Value $lines
+
+    Write-Host ""
+    Write-Host ("Error: " + $_.Exception.Message) -ForegroundColor Red
+    Write-Host ("Error log: " + $ErrorLogPath) -ForegroundColor Yellow
+    exit 1
 }
